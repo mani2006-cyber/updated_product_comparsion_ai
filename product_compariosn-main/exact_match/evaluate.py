@@ -45,7 +45,7 @@ def evaluate_model(model, dataloader, device):
         )
         loss = loss_fn(outputs.logits, batch["labels"])
         preds = torch.argmax(outputs.logits, dim=-1)
-        probs = torch.softmax(outputs.logits, dim=-1)[:, 1]
+        probs = torch.softmax(outputs.logits, dim=-1)
 
         all_labels.extend(batch["labels"].cpu().tolist())
         all_preds.extend(preds.cpu().tolist())

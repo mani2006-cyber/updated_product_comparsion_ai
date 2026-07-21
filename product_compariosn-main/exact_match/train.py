@@ -65,7 +65,7 @@ def run_evaluation(model, dataloader, accelerator, loss_fn):
         loss = loss_fn(logits, batch["labels"])
 
         preds = torch.argmax(logits, dim=-1)
-        probs = torch.softmax(logits, dim=-1)[:, 1]
+        probs = torch.softmax(logits, dim=-1)
 
         gathered_labels, gathered_preds, gathered_probs = accelerator.gather_for_metrics(
             (batch["labels"], preds, probs)

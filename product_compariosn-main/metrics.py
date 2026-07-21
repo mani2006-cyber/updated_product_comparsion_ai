@@ -27,21 +27,35 @@ from sklearn.metrics import (
 import config
 
 
-def compute_metrics(labels: List[int], preds: List[int], probs: Optional[List[float]] = None) -> Dict[str, float]:
+def compute_metrics(labels: List[int], preds: List[int], probs: Optional[List] = None) -> Dict[str, float]:
     """
-    labels: ground truth (0/1)
-    preds:  predicted class (0/1)
-    probs:  predicted probability of class 1 (needed for ROC-AUC)
+    labels: ground truth class indices
+    preds:  predicted class indices
+    probs:  predicted probability distribution per sample -- a list of
+            per-class probabilities (needed for ROC-AUC). For binary this
+            is [[p0, p1], ...]; for 5-class [[p0..p4], ...].
     """
+    num_classes = config.NUM_LABELS
+    average = "binary" if num_classes == 2 else "macro"
+
     metrics = {
         "accuracy": float(accuracy_score(labels, preds)),
-        "precision": float(precision_score(labels, preds, zero_division=0)),
-        "recall": float(recall_score(labels, preds, zero_division=0)),
-        "f1": float(f1_score(labels, preds, zero_division=0)),
+        "precision": float(precision_score(labels, preds, average=average, zero_division=0)),
+        "recall": float(recall_score(labels, preds, average=average, zero_division=0)),
+        "f1": float(f1_score(labels, preds, average=average, zero_division=0)),
     }
 
     if probs is not None and len(set(labels)) > 1:
-        metrics["roc_auc"] = float(roc_auc_score(labels, probs))
+        try:
+            probs_array = np.array(probs)
+            if num_classes == 2:
+                metrics["roc_auc"] = float(roc_auc_score(labels, probs_array[:, 1]))
+            else:
+                metrics["roc_auc"] = float(
+                    roc_auc_score(labels, probs_array, multi_class="ovr", average="macro")
+                )
+        except ValueError:
+            metrics["roc_auc"] = float("nan")
     else:
         metrics["roc_auc"] = float("nan")
 
@@ -49,9 +63,11 @@ def compute_metrics(labels: List[int], preds: List[int], probs: Optional[List[fl
 
 
 def get_classification_report(labels: List[int], preds: List[int]) -> str:
-    return classification_report(
-        labels, preds, target_names=["different_product", "same_product"], zero_division=0
-    )
+    if config.NUM_LABELS == 5:
+        target_names = [name for name, _ in sorted(config.RELATIONSHIP_LABEL_MAP.items(), key=lambda kv: kv[1])]
+    else:
+        target_names = ["different_product", "same_product"]
+    return classification_report(labels, preds, target_names=target_names, zero_division=0)
 
 
 def save_confusion_matrix(
@@ -60,14 +76,20 @@ def save_confusion_matrix(
     save_path: str = os.path.join(config.PLOTS_DIR, "confusion_matrix.png"),
 ) -> str:
     cm = confusion_matrix(labels, preds)
-    plt.figure(figsize=(5, 4))
+    if config.NUM_LABELS == 5:
+        tick_labels = [name for name, _ in sorted(config.RELATIONSHIP_LABEL_MAP.items(), key=lambda kv: kv[1])]
+        figsize = (7, 6)
+    else:
+        tick_labels = ["different", "same"]
+        figsize = (5, 4)
+    plt.figure(figsize=figsize)
     sns.heatmap(
         cm,
         annot=True,
         fmt="d",
         cmap="Blues",
-        xticklabels=["different", "same"],
-        yticklabels=["different", "same"],
+        xticklabels=tick_labels,
+        yticklabels=tick_labels,
     )
     plt.xlabel("Predicted")
     plt.ylabel("Actual")
