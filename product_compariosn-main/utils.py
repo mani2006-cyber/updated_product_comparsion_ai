@@ -1,0 +1,179 @@
+"""
+utils.py
+========
+Cross-cutting helpers used by train.py / evaluate.py / inference.py:
+reproducibility, early stopping, checkpoint I/O, timing/ETA formatting,
+and a shared logger.
+"""
+
+import json
+import logging
+import os
+import random
+import time
+from typing import Any, Dict, Optional
+
+import numpy as np
+import torch
+
+import config
+
+
+# --------------------------------------------------------------------------
+# Logging
+# --------------------------------------------------------------------------
+def get_logger(name: str = "product_comparison") -> logging.Logger:
+    logger = logging.getLogger(name)
+    if logger.handlers:
+        return logger  # avoid duplicate handlers on repeated calls
+
+    logger.setLevel(logging.INFO)
+    fmt = logging.Formatter(
+        "%(asctime)s | %(levelname)-8s | %(message)s", datefmt="%H:%M:%S"
+    )
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(fmt)
+    logger.addHandler(stream_handler)
+
+    os.makedirs(config.LOGS_DIR, exist_ok=True)
+    file_handler = logging.FileHandler(os.path.join(config.LOGS_DIR, "run.log"))
+    file_handler.setFormatter(fmt)
+    logger.addHandler(file_handler)
+
+    return logger
+
+
+# --------------------------------------------------------------------------
+# Reproducibility
+# --------------------------------------------------------------------------
+def set_seed(seed: int = config.RANDOM_SEED) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
+# --------------------------------------------------------------------------
+# Timing / ETA
+# --------------------------------------------------------------------------
+def format_time(seconds: float) -> str:
+    """Turn raw seconds into 'Hh Mm Ss' style string for progress bars."""
+    seconds = max(0, int(seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h {m:02d}m {s:02d}s"
+    if m:
+        return f"{m}m {s:02d}s"
+    return f"{s}s"
+
+
+class ETATracker:
+    """Tracks elapsed/average step time to estimate remaining training time."""
+
+    def __init__(self, total_steps: int):
+        self.total_steps = total_steps
+        self.start_time = time.time()
+        self.step_times = []
+
+    def step(self, current_step: int) -> str:
+        now = time.time()
+        self.step_times.append(now)
+        if len(self.step_times) > 50:
+            self.step_times.pop(0)
+
+        elapsed = now - self.start_time
+        avg_step_time = elapsed / max(current_step, 1)
+        remaining_steps = max(self.total_steps - current_step, 0)
+        eta_seconds = avg_step_time * remaining_steps
+        return format_time(eta_seconds)
+
+
+# --------------------------------------------------------------------------
+# Early stopping
+# --------------------------------------------------------------------------
+class EarlyStopping:
+    """
+    Stops training when the monitored metric stops improving.
+
+    mode="min" for losses, mode="max" for accuracy/F1/etc.
+    """
+
+    def __init__(
+        self,
+        patience: int = config.EARLY_STOPPING_PATIENCE,
+        min_delta: float = config.EARLY_STOPPING_MIN_DELTA,
+        mode: str = "min",
+    ):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.mode = mode
+        self.best_score: Optional[float] = None
+        self.counter = 0
+        self.should_stop = False
+
+    def _is_improvement(self, score: float) -> bool:
+        if self.best_score is None:
+            return True
+        if self.mode == "min":
+            return score < (self.best_score - self.min_delta)
+        return score > (self.best_score + self.min_delta)
+
+    def step(self, score: float) -> bool:
+        """Returns True if `score` is the new best."""
+        if self._is_improvement(score):
+            self.best_score = score
+            self.counter = 0
+            return True
+
+        self.counter += 1
+        if self.counter >= self.patience:
+            self.should_stop = True
+        return False
+
+
+class AverageMeter:
+    """Running average of a scalar (loss, metric, ...)."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.sum = 0.0
+        self.count = 0
+
+    def update(self, value: float, n: int = 1):
+        self.sum += value * n
+        self.count += n
+
+    @property
+    def avg(self) -> float:
+        return self.sum / self.count if self.count else 0.0
+
+
+# --------------------------------------------------------------------------
+# Checkpoint I/O
+# --------------------------------------------------------------------------
+def save_checkpoint(state: Dict[str, Any], path: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    torch.save(state, path)
+
+
+def load_checkpoint(path: str, map_location: str = "cpu") -> Dict[str, Any]:
+    # weights_only=False: these checkpoints are always self-generated by
+    # this project's own train.py (never loaded from an untrusted source),
+    # and can contain plain Python objects (e.g. metrics dicts) beyond raw
+    # tensors, which PyTorch >=2.6's default weights_only=True will reject.
+    return torch.load(path, map_location=map_location, weights_only=False)
+
+
+def save_json(obj: Any, path: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2)
+
+
+def load_json(path: str) -> Any:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
