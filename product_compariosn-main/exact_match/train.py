@@ -106,10 +106,12 @@ def train():
     # "different product" negatives).
     label_counts = train_df["label"].value_counts().to_dict()
     total = sum(label_counts.values())
+    num_labels = config.NUM_LABELS
     class_weights = torch.tensor(
-        [total / (2 * label_counts.get(0, 1)), total / (2 * label_counts.get(1, 1))],
+        [total / (num_labels * label_counts.get(i, 1)) for i in range(num_labels)],
         dtype=torch.float,
     )
+    
     loss_fn = nn.CrossEntropyLoss(weight=class_weights.to(accelerator.device))
 
     # ---- Step 10: optimizer ----------------------------------------------
