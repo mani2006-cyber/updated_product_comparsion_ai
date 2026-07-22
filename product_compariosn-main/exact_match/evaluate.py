@@ -63,7 +63,12 @@ def main():
     parser.add_argument("--data", default=config.RAW_DATA_PATH, help="Path to CSV/JSON dataset")
     parser.add_argument("--split", default="test", choices=["train", "val", "test"])
     parser.add_argument("--model_dir", default=config.TRAINED_MODEL_DIR)
+    parser.add_argument("--num_labels", type=int, default=config.NUM_LABELS,
+                         help="2 for the binary exact-match model, 5 for the relationship model. "
+                              "Must be set here explicitly -- this runs as its own process, so it "
+                              "does not see config.NUM_LABELS changes made in a notebook session.")
     args = parser.parse_args()
+    config.NUM_LABELS = args.num_labels
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Loading model from {args.model_dir} on {device}")
