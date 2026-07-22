@@ -41,13 +41,17 @@ logger = get_logger(__name__)
 
 @dataclass
 class ComparisonResult:
-    similarity_score: float          # 0-100 (%)
-    prediction: str                  # "Same Product" | "Different Product"
-    label: int                       # 1 or 0
+    similarity_score: float          # 0-100 (%) -- confidence in the predicted class
+    prediction: str                  # human-readable prediction
+    label: int                       # binary compat: 1/0 same/different (for 5-class: 1 iff EXACT_MATCH)
+    relationship: str = None         # 5-class label name, e.g. "SIMILAR_ALTERNATIVE" (None for binary models)
+    all_probabilities: dict = None   # {label_name: prob} for every class (only set for 5-class models)
 
     def __str__(self) -> str:
-        return f"Similarity Score: {self.similarity_score:.1f}%\nPrediction:\n{self.prediction}"
-
+        text = f"Similarity Score: {self.similarity_score:.1f}%\nPrediction:\n{self.prediction}"
+        if self.relationship:
+            text += f"\nRelationship: {self.relationship}"
+        return text
 
 class ProductComparer:
     def __init__(self, model_dir: str = config.TRAINED_MODEL_DIR, device: str = None):
@@ -84,12 +88,29 @@ class ProductComparer:
 
         logits = self.model(**encoding).logits
         probs = torch.softmax(logits, dim=-1).squeeze(0)
-        same_prob = probs[1].item()
+        id2label = {int(k): v for k, v in self.model.config.id2label.items()}
+        num_labels = len(id2label)
 
-        label = int(same_prob >= threshold)
-        prediction = "Same Product" if label == 1 else "Different Product"
+        if num_labels == 2:
+            same_prob = probs[1].item()
+            label = int(same_prob >= threshold)
+            prediction = "Same Product" if label == 1 else "Different Product"
+            return ComparisonResult(similarity_score=same_prob * 100, prediction=prediction, label=label)
 
-        return ComparisonResult(similarity_score=same_prob * 100, prediction=prediction, label=label)
+        predicted_id = int(torch.argmax(probs).item())
+        relationship = id2label[predicted_id]
+        confidence = probs[predicted_id].item()
+        all_probabilities = {id2label[i]: float(probs[i].item()) for i in range(num_labels)}
+        label = int(relationship == "EXACT_MATCH")  # binary-compat flag for old callers
+        prediction = relationship.replace("_", " ").title()
+
+        return ComparisonResult(
+            similarity_score=confidence * 100,
+            prediction=prediction,
+            label=label,
+            relationship=relationship,
+            all_probabilities=all_probabilities,
+        )
 
     @torch.no_grad()
     def compare_batch(self, pairs):
