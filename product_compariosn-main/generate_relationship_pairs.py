@@ -100,6 +100,9 @@ def token_overlap_ratio(a: str, b: str) -> float:
     return len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
 
 
+SIMILAR_ALTERNATIVE_OVERLAP_THRESHOLD = 0.25  # shared with generate_synthetic_pairs.py -- keep these in sync
+
+
 def label_pair(row: pd.Series) -> str:
     text_a = f"{row['product1_title']} {row.get('product1_description', '')}"
     text_b = f"{row['product2_title']} {row.get('product2_description', '')}"
@@ -123,7 +126,7 @@ def label_pair(row: pd.Series) -> str:
         return "UNRELATED"
 
     overlap = token_overlap_ratio(text_a, text_b)
-    if overlap >= 0.25:
+    if overlap >= SIMILAR_ALTERNATIVE_OVERLAP_THRESHOLD:
         return "SIMILAR_ALTERNATIVE"
     return "WEAKLY_SIMILAR"
 

@@ -22,7 +22,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from generate_relationship_pairs import categorize, extract_attributes, token_overlap_ratio
+from generate_relationship_pairs import SIMILAR_ALTERNATIVE_OVERLAP_THRESHOLD, categorize, extract_attributes, token_overlap_ratio
 
 COLOR_ALTERNATIVES = ["black", "white", "silver", "blue", "red", "grey", "gold"]
 RAM_ALTERNATIVES = ["4", "8", "16", "32"]
@@ -95,19 +95,20 @@ def build_variant_pairs(products: pd.DataFrame, target_count: int) -> List[Dict]
     return rows
 
 
-def build_alternative_pairs(products: pd.DataFrame, target_count: int) -> List[Dict]:
+def _sample_cross_brand_pairs(
+    by_category: Dict[str, pd.DataFrame],
+    overlap_min: float,
+    overlap_max: float,
+    target_count: int,
+    relationship_label: str,
+    seen_pairs: set,
+) -> List[Dict]:
+    """Shared sampling loop for both SIMILAR_ALTERNATIVE and WEAKLY_SIMILAR
+    synthetic generation -- same category, different (cross-brand) products,
+    filtered to a specific token-overlap band."""
     rows = []
-    products = products.reset_index(drop=True)
-    products["_text"] = products["title"].astype(str) + " " + products["description"].fillna("").astype(str)
-    products["_category"] = products["_text"].map(categorize)
-
-    by_category: Dict[str, pd.DataFrame] = {
-        cat: group for cat, group in products.groupby("_category") if cat != "OTHER" and len(group) >= 2
-    }
-
     attempts = 0
-    max_attempts = target_count * 30  # cap so this can't loop forever on sparse categories
-    seen_pairs = set()
+    max_attempts = target_count * 30
 
     while len(rows) < target_count and attempts < max_attempts:
         attempts += 1
@@ -122,11 +123,11 @@ def build_alternative_pairs(products: pd.DataFrame, target_count: int) -> List[D
         if pair_key in seen_pairs:
             continue
         if str(a.get("brand", "")).strip().lower() == str(b.get("brand", "")).strip().lower():
-            continue  # want cross-brand alternatives, not same-brand variants
+            continue  # want cross-brand, not same-brand variants
 
         overlap = token_overlap_ratio(a["_text"], b["_text"])
-        if not (0.15 <= overlap <= 0.55):
-            continue  # too low = unrelated-ish, too high = near-duplicate
+        if not (overlap_min <= overlap < overlap_max):
+            continue
 
         seen_pairs.add(pair_key)
         rows.append({
@@ -138,10 +139,45 @@ def build_alternative_pairs(products: pd.DataFrame, target_count: int) -> List[D
             "product2_title": b["title"],
             "product2_brand": b.get("brand", ""),
             "product2_description": b.get("description", ""),
-            "relationship_label": "SIMILAR_ALTERNATIVE",
+            "relationship_label": relationship_label,
             "source": "synthetic",
         })
     return rows
+
+
+def _build_category_index(products: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+    products = products.reset_index(drop=True)
+    products["_text"] = products["title"].astype(str) + " " + products["description"].fillna("").astype(str)
+    products["_category"] = products["_text"].map(categorize)
+    return {
+        cat: group for cat, group in products.groupby("_category") if cat != "OTHER" and len(group) >= 2
+    }
+
+
+def build_alternative_pairs(products: pd.DataFrame, target_count: int, seen_pairs: Optional[set] = None) -> List[Dict]:
+    by_category = _build_category_index(products)
+    seen_pairs = seen_pairs if seen_pairs is not None else set()
+    # Aligned with SIMILAR_ALTERNATIVE_OVERLAP_THRESHOLD (0.25) from
+    # generate_relationship_pairs.py -- previously this used 0.15 as the
+    # floor, which contradicted the derived-label boundary and gave the
+    # model conflicting signal for the 0.15-0.25 overlap band.
+    return _sample_cross_brand_pairs(
+        by_category, overlap_min=SIMILAR_ALTERNATIVE_OVERLAP_THRESHOLD, overlap_max=0.55,
+        target_count=target_count, relationship_label="SIMILAR_ALTERNATIVE", seen_pairs=seen_pairs,
+    )
+
+
+def build_weakly_similar_pairs(products: pd.DataFrame, target_count: int, seen_pairs: Optional[set] = None) -> List[Dict]:
+    """WEAKLY_SIMILAR had no dedicated synthetic generator before -- it only
+    existed as whatever derived data happened to fall below the
+    SIMILAR_ALTERNATIVE threshold, which is likely part of why it stayed
+    the weakest class across every training run so far."""
+    by_category = _build_category_index(products)
+    seen_pairs = seen_pairs if seen_pairs is not None else set()
+    return _sample_cross_brand_pairs(
+        by_category, overlap_min=0.05, overlap_max=SIMILAR_ALTERNATIVE_OVERLAP_THRESHOLD,
+        target_count=target_count, relationship_label="WEAKLY_SIMILAR", seen_pairs=seen_pairs,
+    )
 
 
 def generate(input_path: str, relationship_pairs_path: str, target_per_class: int) -> pd.DataFrame:
@@ -149,16 +185,19 @@ def generate(input_path: str, relationship_pairs_path: str, target_per_class: in
     products = collect_unique_products(pair_df)
 
     variant_rows = build_variant_pairs(products, target_per_class)
-    alternative_rows = build_alternative_pairs(products, target_per_class)
+    seen_pairs = set()
+    alternative_rows = build_alternative_pairs(products, target_per_class, seen_pairs=seen_pairs)
+    weakly_similar_rows = build_weakly_similar_pairs(products, target_per_class, seen_pairs=seen_pairs)
 
-    synthetic_df = pd.DataFrame(variant_rows + alternative_rows)
+    synthetic_df = pd.DataFrame(variant_rows + alternative_rows + weakly_similar_rows)
     existing_df = pd.read_csv(relationship_pairs_path)
 
     merged = pd.concat([existing_df, synthetic_df], ignore_index=True)
     merged.to_csv(relationship_pairs_path, index=False)
 
     print(f"Added {len(variant_rows)} SAME_PRODUCT_DIFFERENT_VARIANT + "
-          f"{len(alternative_rows)} SIMILAR_ALTERNATIVE synthetic rows")
+          f"{len(alternative_rows)} SIMILAR_ALTERNATIVE + "
+          f"{len(weakly_similar_rows)} WEAKLY_SIMILAR synthetic rows")
     print(merged["relationship_label"].value_counts())
     print("\nBy source:")
     print(merged["source"].value_counts())
