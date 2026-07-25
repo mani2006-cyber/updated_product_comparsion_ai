@@ -107,11 +107,18 @@ def train():
     label_counts = train_df["label"].value_counts().to_dict()
     total = sum(label_counts.values())
     num_labels = config.NUM_LABELS
-    class_weights = torch.tensor(
-        [total / (num_labels * label_counts.get(i, 1)) for i in range(num_labels)],
-        dtype=torch.float,
-    )
-    
+    raw_weights = [total / (num_labels * label_counts.get(i, 1)) for i in range(num_labels)]
+    # Cap the ratio between the largest and smallest weight. Without this,
+    # a class that becomes rare relative to the others (e.g. after manual
+    # filtering) gets an extreme weight that destabilizes training -- we
+    # saw this directly: WEAKLY_SIMILAR at 943 rows got weight 8.4 vs 0.59
+    # for UNRELATED (14x), causing the model to over-predict WEAKLY_SIMILAR
+    # broadly, including on cases that should've been SIMILAR_ALTERNATIVE
+    # or UNRELATED.
+    max_ratio = 5.0
+    min_weight = min(raw_weights)
+    capped_weights = [min(w, min_weight * max_ratio) for w in raw_weights]
+    class_weights = torch.tensor(capped_weights, dtype=torch.float)
     loss_fn = nn.CrossEntropyLoss(weight=class_weights.to(accelerator.device))
 
     # ---- Step 10: optimizer ----------------------------------------------
