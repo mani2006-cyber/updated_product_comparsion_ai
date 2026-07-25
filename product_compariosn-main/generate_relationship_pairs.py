@@ -121,11 +121,35 @@ def label_pair(row: pd.Series) -> str:
             return "SAME_PRODUCT_DIFFERENT_VARIANT"
         return "EXACT_MATCH"
 
+    # label == 0: could still be the same product family (some generators,
+    # e.g. ones built for a binary same/different task, label "same model,
+    # different color/storage" pairs as a binary negative "near-miss" --
+    # verified: "Bose QuietComfort 45 Silver" vs "...White" comes through
+    # as label=0 from one such generator). Catch that case before falling
+    # through to the generic alternative/weak/unrelated logic, or it gets
+    # misclassified as SIMILAR_ALTERNATIVE instead of the correct
+    # SAME_PRODUCT_DIFFERENT_VARIANT.
+    brand_a = str(row.get("product1_brand", "") or "").strip().lower()
+    brand_b = str(row.get("product2_brand", "") or "").strip().lower()
+    differing_attrs = [
+        k for k in attrs_a
+        if attrs_a[k] is not None and attrs_b[k] is not None and attrs_a[k] != attrs_b[k]
+    ]
+    title_overlap = token_overlap_ratio(str(row["product1_title"]), str(row["product2_title"]))
+    # 0.6 empirically separates "same model, different color" (~0.75) from
+    # "different model, same brand" (~0.36-0.50). Title-only, not combined
+    # text -- descriptions are often independently varied even for genuine
+    # same-model variants (verified: drags combined-text overlap down to
+    # 0.27 for an identical-model pair that only differs by color).
+    if brand_a and brand_a == brand_b and differing_attrs and title_overlap >= 0.6:
+        return "SAME_PRODUCT_DIFFERENT_VARIANT"
+
+    overlap = token_overlap_ratio(text_a, text_b)
+
     # label == 0: different products -- decide alternative vs. weak vs. unrelated
     if cat_a != cat_b or cat_a == "OTHER":
         return "UNRELATED"
 
-    overlap = token_overlap_ratio(text_a, text_b)
     if overlap >= SIMILAR_ALTERNATIVE_OVERLAP_THRESHOLD:
         return "SIMILAR_ALTERNATIVE"
     return "WEAKLY_SIMILAR"
