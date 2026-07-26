@@ -12,6 +12,9 @@ data/titles.txt
 
 *.txt
 *.zip
+trained_model_v1/
+
+
 
 build_balanced_catalog.py
 data/balanced_catalog.csv
