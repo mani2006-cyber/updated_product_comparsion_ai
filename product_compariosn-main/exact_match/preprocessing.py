@@ -20,6 +20,7 @@ import os
 import re
 from typing import Tuple
 
+import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
@@ -185,6 +186,48 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------
 # Step 5: Train / Validation / Test split
 # --------------------------------------------------------------------------
+# Splitting at the pair-row level lets the SAME product appear in a training
+# pair and a different test pair. Measured on relationship_pairs_final.csv,
+# 29.48% of test rows involved a product already seen in training, which
+# inflates reported accuracy relative to genuinely unseen products.
+#
+# Entity-level splitting fixes this by grouping pairs into connected
+# components of the product graph: if (A,B) and (B,C) are both pairs, all of
+# A, B and C must land in the same split, or B leaks. Measured component
+# structure on the same file: 47,678 components, largest 6.2% of rows, 44,754
+# singletons -- comfortably splittable at a 70/15/15 ratio.
+ENTITY_LEVEL_SPLIT = True
+
+# Below this many groups, group-wise splitting cannot hit the target ratios
+# and we fall back to the old stratified row split (with a warning).
+_MIN_GROUPS_FOR_ENTITY_SPLIT = 10
+
+
+def _entity_group_ids(df: pd.DataFrame) -> pd.Series:
+    """Assigns each pair the id of its connected component in the product
+    graph, using union-find with path compression."""
+    parent: dict = {}
+
+    def find(x):
+        parent.setdefault(x, x)
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:            # path compression
+            parent[x], x = root, parent[x]
+        return root
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for a, b in zip(df["text_a"], df["text_b"]):
+        union(a, b)
+    # Roots must be read only after every union is applied.
+    return df["text_a"].map(find)
+
+
 def split_data(
     df: pd.DataFrame,
     val_ratio: float = config.VAL_SPLIT_RATIO,
@@ -192,10 +235,90 @@ def split_data(
     seed: int = config.RANDOM_SEED,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Splits into train / val / test. Stratifies on the label when the
-    dataset is large enough for every split to keep both classes
-    (falls back to a plain random split on tiny datasets).
+    Splits into train / val / test.
+
+    With ENTITY_LEVEL_SPLIT (default), splits by product entity so no product
+    appears in more than one split. Label stratification is not possible
+    alongside group constraints -- whole components move together -- so the
+    resulting per-split label balance is logged instead, and skew is reported.
+
+    Falls back to the previous stratified row split when there are too few
+    groups for group-wise splitting to be meaningful.
     """
+    if ENTITY_LEVEL_SPLIT:
+        groups = _entity_group_ids(df)
+        n_groups = groups.nunique()
+        if n_groups >= _MIN_GROUPS_FOR_ENTITY_SPLIT:
+            # Greedy size-aware bin packing rather than GroupShuffleSplit.
+            # GroupShuffleSplit allocates a fraction of GROUPS, but components
+            # range from 1 to 4,131 rows here, so equal group counts gave very
+            # unequal row counts (measured 63/23/14 against a 70/15/15 target).
+            # Walking components largest-first and giving each to whichever
+            # split is furthest below its row quota keeps rows on target while
+            # still moving whole components together.
+            # Components are label-homogeneous (the generators emit long chains
+            # of one class), so packing purely by size sent every large
+            # SIMILAR/WEAKLY component to train and left val/test with
+            # singletons: measured 11.6% WEAKLY_SIMILAR in train vs 2.3% in
+            # test. Assignment therefore scores BOTH row quota and label
+            # balance, choosing the split that keeps each class closest to its
+            # global proportion.
+            sizes = groups.value_counts()
+            comp_labels = (pd.crosstab(groups, df["label"])
+                           .reindex(sizes.index)
+                           .to_numpy(dtype=float))
+            label_cols = sorted(df["label"].unique())
+            global_frac = (df["label"].value_counts(normalize=True)
+                           .reindex(label_cols).to_numpy(dtype=float))
+
+            rng = np.random.RandomState(seed)
+            tie_break = rng.permutation(len(sizes))
+            order = sorted(range(len(sizes)), key=lambda i: (-sizes.iloc[i], tie_break[i]))
+
+            n = len(df)
+            splits = ["train", "val", "test"]
+            quota = np.array([n * (1 - val_ratio - test_ratio), n * val_ratio, n * test_ratio])
+            filled = np.zeros(3)
+            filled_labels = np.zeros((3, len(label_cols)))
+
+            assignment = {}
+            for i in order:
+                comp_vec, comp_size = comp_labels[i], sizes.iloc[i]
+                best, best_cost = 0, None
+                for s in range(3):
+                    if filled[s] + comp_size > quota[s] * 1.02 and filled.sum() < n:
+                        continue                      # respect the row quota
+                    after = filled_labels[s] + comp_vec
+                    total = after.sum()
+                    # L1 distance from the global class distribution.
+                    div = np.abs(after / total - global_frac).sum() if total else 0.0
+                    # Prefer the emptier split when divergence is comparable.
+                    cost = div + 0.5 * (filled[s] / quota[s])
+                    if best_cost is None or cost < best_cost:
+                        best, best_cost = s, cost
+                if best_cost is None:                 # every split at quota
+                    best = int(np.argmax(quota - filled))
+                assignment[sizes.index[i]] = splits[best]
+                filled[best] += comp_size
+                filled_labels[best] += comp_vec
+
+            split_of = groups.map(assignment)
+            train_df = df[split_of == "train"]
+            val_df = df[split_of == "val"]
+            test_df = df[split_of == "test"]
+
+            logger.info(f"Entity-level split over {n_groups:,} connected components")
+            logger.info(f"Split sizes -> train: {len(train_df)}, val: {len(val_df)}, test: {len(test_df)}")
+            for name, part in (("train", train_df), ("val", val_df), ("test", test_df)):
+                dist = (part["label"].value_counts(normalize=True).sort_index() * 100).round(1).to_dict()
+                logger.info(f"  {name} label %: {dist}")
+            return (train_df.reset_index(drop=True),
+                    val_df.reset_index(drop=True),
+                    test_df.reset_index(drop=True))
+        logger.warning(
+            f"Only {n_groups} entity groups (<{_MIN_GROUPS_FOR_ENTITY_SPLIT}); "
+            "falling back to a row-level stratified split -- entity leakage is NOT prevented.")
+
     stratify_col = df["label"] if config.STRATIFY_SPLITS else None
 
     try:
