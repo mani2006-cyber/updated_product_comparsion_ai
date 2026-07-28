@@ -30,6 +30,7 @@ from typing import Dict, Optional
 import pandas as pd
 
 from data_quality.contradiction_rules import TEXT_ONLY_RULES
+from product_taxonomy import classify_negative_pair
 
 # --------------------------------------------------------------------------
 # Lightweight attribute extraction (placeholder for attribute_extraction/)
@@ -144,9 +145,23 @@ def label_pair(row: pd.Series) -> str:
     if brand_a and brand_a == brand_b and differing_attrs and title_overlap >= 0.6:
         return "SAME_PRODUCT_DIFFERENT_VARIANT"
 
+    # label == 0: different products -- decide alternative vs. weak vs. unrelated.
+    #
+    # product_taxonomy gets first say, but only speaks when it can identify
+    # BOTH categories (~19% of rows). It fixes two measured bugs in the
+    # fallback below: (a) `cat_a == "OTHER"` asserting UNRELATED for any
+    # product whose text lacks a category keyword -- which mislabels 2,481
+    # pairs, e.g. two different-brand TWS earbuds; (b) the bare
+    # SIMILAR_ALTERNATIVE_OVERLAP_THRESHOLD constant, which mislabels a
+    # further 807. It returns None on the remaining ~80%, where measurement
+    # showed token overlap cannot separate UNRELATED from WEAKLY_SIMILAR
+    # (medians 0.077 vs 0.081) -- those fall through unchanged.
+    verdict = classify_negative_pair(text_a, text_b)
+    if verdict is not None:
+        return verdict
+
     overlap = token_overlap_ratio(text_a, text_b)
 
-    # label == 0: different products -- decide alternative vs. weak vs. unrelated
     if cat_a != cat_b or cat_a == "OTHER":
         return "UNRELATED"
 
