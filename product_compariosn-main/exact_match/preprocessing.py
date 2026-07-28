@@ -170,7 +170,13 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     if dropped:
         logger.info(f"Dropped {dropped} rows with empty text after cleaning")
 
-    df = df.drop_duplicates(subset=["text_a", "text_b", config.LABEL_COLUMN]).reset_index(drop=True)
+    _sorted = df.apply(lambda r: tuple(sorted([r["text_a"], r["text_b"]])), axis=1)
+    df["_dedup_a"], df["_dedup_b"] = zip(*_sorted)
+    df = (
+    df.drop_duplicates(subset=["_dedup_a", "_dedup_b", config.LABEL_COLUMN])
+      .drop(columns=["_dedup_a", "_dedup_b"])
+      .reset_index(drop=True)
+    )
     logger.info(f"Clean dataset size: {len(df)} rows | label counts: "
                 f"{df[config.LABEL_COLUMN].value_counts().to_dict()}")
     return df[["text_a", "text_b", config.LABEL_COLUMN]].rename(columns={config.LABEL_COLUMN: "label"})
