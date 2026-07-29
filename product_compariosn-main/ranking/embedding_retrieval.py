@@ -223,6 +223,55 @@ def evaluate_recall(index: ProductIndex, clusters_path: List[str], ks=(1, 5, 10,
     print("\nRecall@k caps the whole pipeline: anything not retrieved is never re-ranked.")
 
 
+def evaluate_pairs(index: ProductIndex, ground_truth_csv: str, ks=(1, 5, 10, 20, 50, 100),
+                   sample: int = 2000, seed: int = 20260730) -> None:
+    """Recall@k against known matching id pairs, at catalog scale.
+
+    Why this matters more than the cluster evaluation: recall@50 was 100% on a
+    406-product catalog, but retrieving 50 items there means returning 12% of
+    everything. That number says nothing about production. Here the catalog is
+    ~113k, so top-50 is 0.04% of it -- a genuine test of whether the embedding
+    stage can find a needle.
+
+    Recall@k is the ceiling on the whole pipeline: a true match the retriever
+    never surfaces is one the cross-encoder never gets to score.
+    """
+    import csv
+    import random
+
+    by_id = {p["id"]: i for i, p in enumerate(index.products)}
+    pairs = []
+    with open(ground_truth_csv, encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            a, b = row["product1_id"], row["product2_id"]
+            if a in by_id and b in by_id and a != b:
+                pairs.append((a, b))
+
+    if not pairs:
+        print("No usable ground-truth pairs found.")
+        return
+
+    rng = random.Random(seed)
+    rng.shuffle(pairs)
+    probes = pairs[:sample]
+
+    hits = {k: 0 for k in ks}
+    max_k = max(ks)
+    for a, b in probes:
+        query = index.products[by_id[a]]
+        found = index.search(query, k=max_k)
+        ranked = [p.get("id") for p in found]
+        for k in ks:
+            if b in ranked[:k]:
+                hits[k] += 1
+
+    print(f"\nrecall@k over {len(probes):,} probes | catalog {len(index.products):,} products")
+    print(f"(top-{max_k} is {max_k / len(index.products):.3%} of the catalog)")
+    for k in ks:
+        print(f"  recall@{k:<4} {hits[k] / len(probes):6.1%}")
+    print("\nThis caps the pipeline: whatever is not retrieved is never re-ranked.")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Embedding + FAISS retrieval over a product catalog.")
     sub = ap.add_subparsers(dest="command", required=True)
@@ -237,6 +286,11 @@ def main():
     e.add_argument("--clusters", nargs="+",
                    default=["data/shopping_offer_clusters.jsonl",
                             "data/shopping_offer_clusters_b.jsonl"])
+
+    ep = sub.add_parser("evaluate-pairs", help="Recall@k against known matching id pairs.")
+    ep.add_argument("--index", default="data/product_index")
+    ep.add_argument("--ground-truth", default="data/scale_ground_truth.csv")
+    ep.add_argument("--sample", type=int, default=2000)
 
     q = sub.add_parser("query", help="Ad-hoc nearest-neighbour lookup.")
     q.add_argument("--index", default="data/product_index")
@@ -255,6 +309,10 @@ def main():
     elif args.command == "evaluate":
         index = ProductIndex.load(args.index)
         evaluate_recall(index, args.clusters)
+
+    elif args.command == "evaluate-pairs":
+        index = ProductIndex.load(args.index)
+        evaluate_pairs(index, args.ground_truth, sample=args.sample)
 
     else:
         index = ProductIndex.load(args.index)
