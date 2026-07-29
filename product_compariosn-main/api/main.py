@@ -34,16 +34,15 @@ logger = get_logger(__name__)
 
 # Which checkpoint to serve, overridable with MODEL_DIR.
 #
-# Default order matters. `trained_model/` holds the ORIGINAL 5-class model
-# trained on rule-generated labels; measured against human-labelled WDC pairs
-# it scores 45.9 F1. `trained_model_real/` is trained on 38k human-labelled
-# pairs and beats published Ditto/RoBERTa baselines on 5 of 6 benchmarks. The
-# better model is therefore preferred whenever it is present, with the old one
-# kept only as a fallback so an existing deployment does not break.
+# There is deliberately NO fallback. An earlier version fell back to
+# `trained_model/`, the original 5-class model trained on rule-generated
+# labels, which scores 45.9 F1 against human-labelled pairs versus 75+ for the
+# current one. Silently serving it would mean the service answered every
+# request confidently and wrongly while reporting healthy -- strictly worse
+# than refusing to start. A missing model now surfaces as 503.
 _MODEL_CANDIDATES = [
     os.environ.get("MODEL_DIR"),
     os.path.join(config.ROOT_DIR, "trained_model_real"),
-    config.TRAINED_MODEL_DIR,
 ]
 
 
