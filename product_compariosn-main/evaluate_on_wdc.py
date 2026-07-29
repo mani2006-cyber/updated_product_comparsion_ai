@@ -155,20 +155,41 @@ def load_wdc_local(path: str) -> Dict[str, List[dict]]:
 
 
 def load_wdc_hf(categories: List[str], size: str, split: str) -> Dict[str, List[dict]]:
-    """Fallback: HuggingFace products-2017 mirror (no unseen dimension)."""
-    from datasets import load_dataset
+    """Fallback: HuggingFace products-2017 mirror (no unseen dimension).
+
+    Files are fetched directly instead of via datasets.load_dataset().
+    wdc/products-2017 ships a loading script (products-2017.py) and datasets
+    >= 4.0 refuses to run those, so load_dataset() fails for every config --
+    which this function used to report as "check internet access". The repo
+    stores the plain .json.gz files the script would have read, so reading them
+    ourselves works on any datasets version, and on none at all.
+    """
+    from huggingface_hub import hf_hub_download
+
+    # train/valid are size-partitioned; the test set is not (one test.json.gz
+    # per category). Asking for test_<size>.json.gz 404s on every category.
+    if split == "test":
+        names = {cat: f"{cat}/test.json.gz" for cat in categories}
+    else:
+        stem = "valid" if split == "validation" else "train"
+        names = {cat: f"{cat}/{stem}_{size}.json.gz" for cat in categories}
 
     rows: List[dict] = []
     for cat in categories:
-        name = f"{cat}_{size}"
+        filename = names[cat]
         try:
-            ds = load_dataset("wdc/products-2017", name, split=split)
-            rows.extend(dict(r) for r in ds)
-            logger.info(f"  loaded {name}/{split}: {len(ds):,} pairs")
+            path = hf_hub_download("wdc/products-2017", filename, repo_type="dataset")
+            with gzip.open(path, "rt", encoding="utf-8") as fh:
+                loaded = [json.loads(line) for line in fh if line.strip()]
+            rows.extend(loaded)
+            logger.info(f"  loaded {filename}: {len(loaded):,} pairs")
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"  could not load {name}/{split}: {exc}")
+            logger.warning(f"  could not load {filename}: {exc}")
     if not rows:
-        raise SystemExit("No WDC subsets loaded; check internet access and `datasets`.")
+        raise SystemExit(
+            "No WDC subsets loaded from the HuggingFace mirror. Check the warnings "
+            "above for the real cause before assuming it is the network."
+        )
     return {"products-2017": rows}
 
 

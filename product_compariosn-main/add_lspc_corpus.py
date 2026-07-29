@@ -83,19 +83,32 @@ def load_lspc(categories: List[str], size: str) -> Dict[str, pd.DataFrame]:
 
     Sizes are NESTED (small subset of medium subset of large subset of xlarge),
     so exactly one size is loaded; combining them would duplicate pairs.
+
+    The files are fetched DIRECTLY rather than through datasets.load_dataset().
+    wdc/products-2017 ships a loading script (products-2017.py), and datasets
+    >= 4.0 refuses to execute those -- load_dataset() fails with "Dataset
+    scripts are no longer supported" for every config, which the caller used to
+    report as "check internet access". The repo also stores the plain
+    `<category>/<split>_<size>.json.gz` files the script would have read, so
+    reading them ourselves is both simpler and immune to the datasets version.
     """
-    from datasets import load_dataset
+    import gzip
+    import json
+
+    from huggingface_hub import hf_hub_download
 
     frames: Dict[str, List[pd.DataFrame]] = {"train": [], "valid": []}
     for cat in categories:
         config = f"{cat}_{size}"
-        for split, key in (("train", "train"), ("valid", "validation")):
+        for split, key in (("train", "train"), ("valid", "valid")):
+            filename = f"{cat}/{key}_{size}.json.gz"
             try:
-                ds = load_dataset("wdc/products-2017", config, split=key)
+                path = hf_hub_download("wdc/products-2017", filename, repo_type="dataset")
+                with gzip.open(path, "rt", encoding="utf-8") as fh:
+                    rows = [json.loads(line) for line in fh if line.strip()]
             except Exception as exc:  # noqa: BLE001
                 print(f"  {config}/{key}: unavailable ({exc})")
                 continue
-            rows = [dict(r) for r in ds]
             frames[split].append(pd.DataFrame({
                 "text_a": [serialize(r, "left") for r in rows],
                 "text_b": [serialize(r, "right") for r in rows],
