@@ -103,30 +103,53 @@ def load_wdc_local(path: str) -> Dict[str, List[dict]]:
     """
     work = path
     if path.lower().endswith(".zip"):
-        work = os.path.join(os.path.dirname(os.path.abspath(path)) or ".", "_wdc_extracted")
+        # Extract into the CURRENT WORKING DIRECTORY, not next to the zip.
+        # Kaggle mounts /kaggle/input read-only, so extracting beside the
+        # source archive raises PermissionError there. cwd is writable in
+        # every environment this runs in.
+        work = os.path.join(os.getcwd(), "_wdc_extracted")
         os.makedirs(work, exist_ok=True)
         with zipfile.ZipFile(path) as zf:
             zf.extractall(work)
         logger.info(f"extracted {path} -> {work}")
 
+    # Accept both '.json.gz' and plain '.json'. Kaggle decompresses archives
+    # when a Dataset is uploaded, so the same benchmark arrives gzipped from
+    # webdatacommons but un-gzipped once it has been through Kaggle.
+    candidates = sorted(
+        glob.glob(os.path.join(work, "**", "*_gs.json.gz"), recursive=True)
+        + glob.glob(os.path.join(work, "**", "*_gs.json"), recursive=True)
+    )
+
     found: Dict[str, List[dict]] = {}
-    for gz in sorted(glob.glob(os.path.join(work, "**", "*_gs.json.gz"), recursive=True)):
-        base = os.path.basename(gz)
+    for src in candidates:
+        base = os.path.basename(src)
         if "rnd" not in base or "un_gs" not in base:
             continue
         tag = UNSEEN_TAGS.get(base.split("rnd")[1].split("un")[0])
-        if tag is None:
+        if tag is None or tag in found:
             continue
-        with gzip.open(gz, "rt", encoding="utf-8") as fh:
-            rows = [json.loads(line) for line in fh]
+
+        opener = gzip.open if src.endswith(".gz") else open
+        with opener(src, "rt", encoding="utf-8") as fh:
+            text = fh.read()
+        # Normally JSON-lines; tolerate a plain JSON array too, so an
+        # unreadable file is never mistaken for an empty benchmark.
+        try:
+            rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+        except json.JSONDecodeError:
+            rows = json.loads(text)
+            if isinstance(rows, dict):
+                rows = [rows]
+
         found[tag] = rows
         pos = sum(r["label"] for r in rows)
         logger.info(f"  {tag:<10} {base}  n={len(rows):,}  positives={pos:,} ({pos / len(rows):.1%})")
 
     if not found:
         raise SystemExit(
-            f"No '*_gs.json.gz' gold-standard files under {work}. "
-            "Point --wdc at the extracted folder or at e.g. 50pair.zip."
+            f"No '*_gs.json[.gz]' gold-standard files under {work}. "
+            "Point --wdc at the folder holding the wdcproducts*_gs.json files."
         )
     return found
 
