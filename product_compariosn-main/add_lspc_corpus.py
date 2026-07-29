@@ -40,6 +40,7 @@ Usage:
 
 import argparse
 import os
+import random
 import re
 from typing import Dict, List, Set, Tuple
 
@@ -163,6 +164,117 @@ def report_leakage(df: pd.DataFrame, per_split: Dict[str, Set[str]]) -> pd.Serie
     return mask
 
 
+def sample_diverse(df: pd.DataFrame, quota: int, seed: int = 42) -> pd.DataFrame:
+    """Picks `quota` rows, maximising the number of DISTINCT products covered.
+
+    WHY SUBSAMPLING RATHER THAN A SMALLER --size
+    --------------------------------------------
+    LSPC xlarge is 171,787 train pairs over only ~13,812 distinct normalised
+    titles -- about 25 permutations per product. The new signal is the products
+    the corpus lacks, not the permutations, and ~3 pairs per product captures
+    it. The sizes do not help: they are NESTED subsets of pairs drawn from the
+    same product pool, so diversity is capped at ~13.8k whichever one is loaded.
+    Merging all of it would make LSPC 82% of training and push Amazon-Google
+    and Abt-Buy under 5% -- two benchmarks this model currently beats.
+
+    Selection is greedy in three tiers over a shuffled order, so a pair that
+    introduces two unseen products is always preferred to another permutation
+    of products already covered:
+
+        1. both sides unseen   (+2 products per pair)
+        2. one side unseen     (+1 product per pair)
+        3. fill the remainder  (extra permutations, in shuffled order)
+
+    Shuffling first matters: the raw files are grouped by cluster, so a
+    positional slice would take whole product clusters and miss the tail.
+    """
+    if quota >= len(df):
+        return df
+
+    order = list(range(len(df)))
+    random.Random(seed).shuffle(order)
+    na = df["raw_a"].map(norm_title).tolist()
+    nb = df["raw_b"].map(norm_title).tolist()
+
+    seen: Set[str] = set()
+    chosen: List[int] = []
+    deferred_one: List[int] = []
+    deferred_none: List[int] = []
+
+    # tier 1
+    for i in order:
+        if len(chosen) >= quota:
+            break
+        a, b = na[i], nb[i]
+        if a not in seen and b not in seen:
+            chosen.append(i)
+            seen.update((a, b))
+        else:
+            deferred_one.append(i)
+    # tier 2
+    for i in deferred_one:
+        if len(chosen) >= quota:
+            deferred_none.append(i)
+            continue
+        a, b = na[i], nb[i]
+        if a not in seen or b not in seen:
+            chosen.append(i)
+            seen.update((a, b))
+        else:
+            deferred_none.append(i)
+    # tier 3
+    for i in deferred_none:
+        if len(chosen) >= quota:
+            break
+        chosen.append(i)
+
+    return df.iloc[sorted(chosen)].reset_index(drop=True)
+
+
+def subsample(df: pd.DataFrame, max_pairs: int, seed: int = 42) -> pd.DataFrame:
+    """Stratifies `max_pairs` across categories, then maximises distinct products.
+
+    Quotas are proportional to each category's available pairs, so the natural
+    balance of the corpus is preserved. A category that cannot fill its quota
+    hands the remainder back to the others.
+    """
+    if max_pairs is None or max_pairs >= len(df):
+        return df
+
+    groups = {src: g for src, g in df.groupby("source", sort=True)}
+    total = len(df)
+    quotas = {src: int(round(max_pairs * len(g) / total)) for src, g in groups.items()}
+
+    # hand back what small categories cannot fill, largest category first
+    short = sum(max(0, q - len(groups[s])) for s, q in quotas.items())
+    for src in quotas:
+        quotas[src] = min(quotas[src], len(groups[src]))
+    for src in sorted(quotas, key=lambda s: -len(groups[s])):
+        if short <= 0:
+            break
+        room = len(groups[src]) - quotas[src]
+        take = min(room, short)
+        quotas[src] += take
+        short -= take
+
+    out = []
+    print(f"\nsubsampling to ~{max_pairs:,} pairs (diversity-first, stratified):")
+    for src in sorted(groups):
+        picked = sample_diverse(groups[src].reset_index(drop=True), quotas[src], seed)
+        prods = len(set(picked["raw_a"].map(norm_title)) | set(picked["raw_b"].map(norm_title)))
+        avail = len(set(groups[src]["raw_a"].map(norm_title)) |
+                    set(groups[src]["raw_b"].map(norm_title)))
+        print(f"  {src:<20} {len(picked):>7,} / {len(groups[src]):>7,} pairs  "
+              f"| products {prods:>6,} / {avail:>6,} ({prods/max(avail,1):5.1%})  "
+              f"| {len(picked)/max(prods,1):4.1f} pairs/product")
+        out.append(picked)
+
+    result = pd.concat(out, ignore_index=True)
+    print(f"  {'TOTAL':<20} {len(result):>7,} / {len(df):>7,} pairs  "
+          f"| positives {result.label.mean():.1%} (was {df.label.mean():.1%})")
+    return result
+
+
 def main():
     ap = argparse.ArgumentParser(description="Add WDC LSPC 2017 with a gold-standard leakage check.")
     ap.add_argument("--wdc", required=True, help="Folder holding the WDC gold standards")
@@ -172,6 +284,11 @@ def main():
                     help="Measure leakage and stop, writing nothing.")
     ap.add_argument("--drop-leaked", action="store_true",
                     help="Remove training rows touching any gold-standard product.")
+    ap.add_argument("--max-pairs", type=int, default=None,
+                    help="Cap LSPC train pairs, stratified across categories and "
+                         "sampled to maximise distinct products (see sample_diverse). "
+                         "Omit to merge everything, which makes LSPC ~82%% of training.")
+    ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--train", default=OUT_TRAIN)
     ap.add_argument("--valid", default=OUT_VALID)
     args = ap.parse_args()
@@ -194,6 +311,20 @@ def main():
         train_new = train_new[~mask].reset_index(drop=True)
         print(f"\ndropped {int(mask.sum()):,} leaked rows -> {len(train_new):,} remain")
 
+    valid_new = lspc.get("valid", pd.DataFrame())
+    if args.max_pairs is not None:
+        kept = len(train_new)
+        train_new = subsample(train_new, args.max_pairs, args.seed)
+        # Scale valid by the same ratio. Merging all 42,949 LSPC valid pairs
+        # into a 10,605-pair valid set would make LSPC ~80% of it, and valid
+        # is what early stopping and best-checkpoint selection read -- the
+        # model would be selected on LSPC rather than on the benchmarks.
+        if len(valid_new):
+            valid_new = subsample(
+                valid_new, max(1, round(len(valid_new) * len(train_new) / max(kept, 1))),
+                args.seed,
+            )
+
     existing_train = pd.read_csv(args.train) if os.path.exists(args.train) else pd.DataFrame()
     existing_valid = pd.read_csv(args.valid) if os.path.exists(args.valid) else pd.DataFrame()
     if existing_train.empty:
@@ -203,7 +334,7 @@ def main():
     cols = ["text_a", "text_b", "label", "source"]
     train = pd.concat([existing_train, train_new[cols]], ignore_index=True)
     valid = pd.concat([existing_valid,
-                       lspc["valid"][cols] if "valid" in lspc else pd.DataFrame()],
+                       valid_new[cols] if len(valid_new) else pd.DataFrame()],
                       ignore_index=True)
 
     # Order-invariant dedup, then a hard train/valid separation. Same discipline
@@ -231,9 +362,14 @@ def main():
           f"{train.label.mean():.1%}) -> {args.train}")
     print(f"VALID {len(valid):,} pairs ({int(valid.label.sum()):,} positive, "
           f"{valid.label.mean():.1%}) -> {args.valid}")
+    # Percentages, not just counts: the risk of merging LSPC is that it
+    # crowds out Amazon-Google and Abt-Buy, two benchmarks this model beats.
+    # If either falls far below its ~15% share, expect dilution in the scores.
     print("\ncomposition:")
     for src, n in train["source"].value_counts().items():
-        print(f"  {src:<28} {n:>8,}")
+        print(f"  {src:<28} {n:>8,}  {n/len(train):6.1%}")
+    lspc_share = train["source"].astype(str).str.startswith("LSPC").mean()
+    print(f"  {'-> LSPC share of training':<28} {'':>8}  {lspc_share:6.1%}")
 
 
 if __name__ == "__main__":
