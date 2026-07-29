@@ -166,6 +166,11 @@ def main():
     ap.add_argument("--lr", type=float, default=5e-5, help="reference baseline uses 5e-5")
     ap.add_argument("--batch_size", type=int, default=32, help="x2 accumulation = effective 64")
     ap.add_argument("--out_dir", default="trained_model_wdc")
+    ap.add_argument("--progress", action="store_true",
+                    help="Show the per-step tqdm bar. Off by default: under Kaggle's "
+                         "'!python' the bar cannot rewrite its line, so every step "
+                         "prints a fresh row and buries the epoch summaries. The WDC "
+                         "reference script passes --disable_tqdm=True for the same reason.")
     args = ap.parse_args()
 
     # ---- config overrides MUST happen before exact_match is imported ------
@@ -198,9 +203,28 @@ def main():
 
     preprocessing.load_clean_split = _fixed_splits
 
-    from exact_match.train import train
+    import exact_match.train as train_module
+
+    if not args.progress:
+        # Silence the per-step bar without editing train.py. train.py does
+        # `from tqdm.auto import tqdm`, so replacing the module attribute is
+        # enough; the per-EPOCH logger.info lines are untouched and remain the
+        # progress signal.
+        _real_tqdm = train_module.tqdm
+
+        def _silent_tqdm(iterable=None, *a, **kw):
+            kw["disable"] = True
+            return _real_tqdm(iterable, *a, **kw)
+
+        train_module.tqdm = _silent_tqdm
+        import evaluate_on_wdc as _eval_mod
+        _real_eval_tqdm = _eval_mod.tqdm
+        _eval_mod.tqdm = lambda it=None, *a, **kw: _real_eval_tqdm(
+            it, *a, **{**kw, "disable": True})
+
     print("\nFine-tuning (existing exact_match/train.py, unmodified) ...")
-    train()
+    print("Per-step progress is off; one summary line per epoch follows.")
+    train_module.train()
 
     # ---- score the three gold standards ---------------------------------
     import torch
