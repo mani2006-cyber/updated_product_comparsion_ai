@@ -14,6 +14,12 @@ data/titles.txt
 *.zip
 trained_model_v1/
 
+# ER-Magellan benchmark pairs are .txt and MUST be tracked. Without this
+# negation the `*.txt` rules above silently swallow all 41,519 human-labelled
+# pairs, `git add` reports nothing, and training fails on the remote with
+# "No datasets found".
+!data/er_magellan/**/*.txt
+
 
 
 build_balanced_catalog.py
