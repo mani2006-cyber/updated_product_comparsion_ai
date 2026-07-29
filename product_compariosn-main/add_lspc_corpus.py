@@ -288,6 +288,11 @@ def main():
                     help="Cap LSPC train pairs, stratified across categories and "
                          "sampled to maximise distinct products (see sample_diverse). "
                          "Omit to merge everything, which makes LSPC ~82%% of training.")
+    ap.add_argument("--lspc-valid", action="store_true",
+                    help="Also merge LSPC into validation. OFF by default: valid drives "
+                         "early stopping, so LSPC in valid confounds 'LSPC dilutes "
+                         "training' with 'LSPC-dominated valid picked the wrong "
+                         "checkpoint'. Only for deliberate experiments.")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--train", default=OUT_TRAIN)
     ap.add_argument("--valid", default=OUT_VALID)
@@ -311,19 +316,37 @@ def main():
         train_new = train_new[~mask].reset_index(drop=True)
         print(f"\ndropped {int(mask.sum()):,} leaked rows -> {len(train_new):,} remain")
 
-    valid_new = lspc.get("valid", pd.DataFrame())
+    kept = len(train_new)
     if args.max_pairs is not None:
-        kept = len(train_new)
         train_new = subsample(train_new, args.max_pairs, args.seed)
-        # Scale valid by the same ratio. Merging all 42,949 LSPC valid pairs
-        # into a 10,605-pair valid set would make LSPC ~80% of it, and valid
-        # is what early stopping and best-checkpoint selection read -- the
-        # model would be selected on LSPC rather than on the benchmarks.
-        if len(valid_new):
+
+    # LSPC is kept OUT of validation by default, and this is deliberate.
+    #
+    # valid drives early stopping and best-checkpoint selection. If LSPC were
+    # ~half of it, the run could select a checkpoint that is strong on LSPC and
+    # weaker on Amazon-Google and Abt-Buy -- and the resulting drop would look
+    # exactly like "LSPC dilutes training" while actually being "an
+    # LSPC-dominated valid picked the wrong checkpoint". Those two have
+    # OPPOSITE fixes (merge less LSPC vs. keep LSPC out of valid), and nothing
+    # in the output distinguishes them.
+    #
+    # So valid stays as the existing WDC + ER-Magellan pairs and training is
+    # the single variable under test. --lspc-valid opts back in, scaling LSPC
+    # valid by the same ratio applied to train; it exists for deliberate
+    # experiments, not for the dilution measurement.
+    valid_new = pd.DataFrame()
+    if args.lspc_valid:
+        valid_new = lspc.get("valid", pd.DataFrame())
+        if len(valid_new) and args.max_pairs is not None:
             valid_new = subsample(
                 valid_new, max(1, round(len(valid_new) * len(train_new) / max(kept, 1))),
                 args.seed,
             )
+        print(f"\n--lspc-valid: adding {len(valid_new):,} LSPC pairs to validation. "
+              "Checkpoint selection will no longer be driven by the benchmarks alone.")
+    else:
+        print(f"\nLSPC excluded from validation ({len(lspc.get('valid', [])):,} pairs "
+              "not merged) so early stopping stays driven by WDC + ER-Magellan.")
 
     existing_train = pd.read_csv(args.train) if os.path.exists(args.train) else pd.DataFrame()
     existing_valid = pd.read_csv(args.valid) if os.path.exists(args.valid) else pd.DataFrame()
@@ -341,6 +364,10 @@ def main():
     # as build_real_corpus.py: merging sources creates overlaps none of them has
     # alone (124 such pairs were found the first time).
     def dedupe(df):
+        # Excluding LSPC from valid can leave this empty when no base corpus
+        # exists yet; an empty frame has no .text_a to zip over.
+        if df.empty:
+            return df.reset_index(drop=True), 0
         k = [tuple(sorted((a, b))) for a, b in zip(df.text_a, df.text_b)]
         df = df.assign(_ka=[x[0] for x in k], _kb=[x[1] for x in k])
         n = len(df)
