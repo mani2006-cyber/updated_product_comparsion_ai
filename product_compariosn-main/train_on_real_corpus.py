@@ -120,6 +120,26 @@ def main():
     print("\nTraining (exact_match/train.py, unmodified). One line per epoch:\n")
     train_module.train()
 
+    # Record the input layout INSIDE the checkpoint. A model only understands
+    # the serialization it was trained on, and feeding it another does not
+    # raise -- it silently destroys accuracy. This corpus is `COL attr VAL
+    # value`, while inference.py's historical default was
+    # `title | brand x | description`; the mismatch measured three obvious
+    # matches at 49.8% / 20.6% / 4.4% instead of ~100%, i.e. zero recall, with
+    # the service still reporting healthy. ProductComparer reads this field.
+    import json
+    meta_path = os.path.join(config.TRAINED_MODEL_DIR, "training_metadata.json")
+    try:
+        with open(meta_path, encoding="utf-8") as fh:
+            meta = json.load(fh)
+    except Exception:  # noqa: BLE001
+        meta = {}
+    meta["serialization"] = "colval"
+    meta["trained_on"] = f"real corpus: {dict(train_df['source'].value_counts())}"
+    with open(meta_path, "w", encoding="utf-8") as fh:
+        json.dump(meta, fh, indent=2)
+    print(f"recorded serialization=colval in {meta_path}")
+
     # ---- evaluate, one benchmark at a time --------------------------------
     import torch
     from sklearn.metrics import precision_recall_fscore_support

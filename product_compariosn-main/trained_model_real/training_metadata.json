@@ -1,0 +1,12 @@
+{
+  "base_model": "microsoft/deberta-v3-small",
+  "task": "product_pair_classification",
+  "num_labels": 2,
+  "max_seq_length": 256,
+  "label_map": {
+    "0": "different_product",
+    "1": "same_product"
+  },
+  "serialization": "colval",
+  "trained_on": "WDC-Products + Amazon-Google + Walmart-Amazon + Abt-Buy (38,145 human-labelled pairs)"
+}

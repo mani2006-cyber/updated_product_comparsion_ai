@@ -53,13 +53,65 @@ class ComparisonResult:
             text += f"\nRelationship: {self.relationship}"
         return text
 
+def _serialize_colval(title: str, brand: str = "", description: str = "") -> str:
+    """Ditto-style `COL attr VAL value` used by the WDC / ER-Magellan corpora."""
+    def words(value, limit):
+        return " ".join(str(value or "").split(" ")[:limit]).strip()
+    return (f"COL brand VAL {words(brand, 5)} "
+            f"COL title VAL {words(title, 50)} "
+            f"COL description VAL {words(description, 100)}").strip()
+
+
 class ProductComparer:
-    def __init__(self, model_dir: str = config.TRAINED_MODEL_DIR, device: str = None):
+    """Loads a trained checkpoint and scores product pairs.
+
+    SERIALIZATION MUST MATCH TRAINING
+    ---------------------------------
+    A model only understands the text layout it was trained on. Feeding the
+    wrong one does not raise; it silently destroys accuracy. Measured on this
+    project's own model, three unmistakable matches scored 49.8% / 20.6% / 4.4%
+    under the `title | brand x | description` layout and 100% / 99.9% / 100%
+    under `COL brand VAL ... COL title VAL ...`. Recall on real matches was
+    zero, while the service reported healthy.
+
+    So the layout is read from the checkpoint's training_metadata.json
+    ("serialization": "colval" | "pipeline") rather than assumed. Checkpoints
+    predating that field fall back to "pipeline", which is what the original
+    5-class model was trained with, and it can always be forced explicitly.
+    """
+
+    def __init__(self, model_dir: str = config.TRAINED_MODEL_DIR, device: str = None,
+                 serialization: str = None):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"Loading trained model from {model_dir} on {self.device}")
         self.tokenizer = AutoTokenizer.from_pretrained(model_dir)
         self.model = AutoModelForSequenceClassification.from_pretrained(model_dir).to(self.device)
         self.model.eval()
+        self.serialization = serialization or self._detect_serialization(model_dir)
+        logger.info(f"Input serialization: {self.serialization}")
+
+    @staticmethod
+    def _detect_serialization(model_dir: str) -> str:
+        import json
+        import os
+        path = os.path.join(model_dir, "training_metadata.json")
+        try:
+            with open(path, encoding="utf-8") as fh:
+                value = json.load(fh).get("serialization")
+            if value in ("colval", "pipeline"):
+                return value
+        except Exception:  # noqa: BLE001
+            pass
+        logger.warning(
+            "No 'serialization' recorded in %s; assuming 'pipeline'. If this model was "
+            "trained on the WDC/ER-Magellan corpora it needs 'colval' -- the wrong choice "
+            "silently collapses match recall.", path)
+        return "pipeline"
+
+    def _text(self, title: str, brand: str = "", specs: str = "", description: str = "") -> str:
+        if self.serialization == "colval":
+            return _serialize_colval(title, brand, specs or description)
+        return build_product_text(title, brand=brand, specs=specs, description=description)
 
     @torch.no_grad()
     def compare(
@@ -74,8 +126,8 @@ class ProductComparer:
         description_b: str = "",
         threshold: float = config.INFERENCE_THRESHOLD,
     ) -> ComparisonResult:
-        text_a = build_product_text(title_a, brand=brand_a, specs=specs_a, description=description_a)
-        text_b = build_product_text(title_b, brand=brand_b, specs=specs_b, description=description_b)
+        text_a = self._text(title_a, brand_a, specs_a, description_a)
+        text_b = self._text(title_b, brand_b, specs_b, description_b)
 
         encoding = self.tokenizer(
             text_a,
@@ -113,17 +165,72 @@ class ProductComparer:
         )
 
     @torch.no_grad()
+    def score_pairs(self, pairs, batch_size: int = 32,
+                    threshold: float = config.INFERENCE_THRESHOLD):
+        """Scores many pairs with REAL batching -- one forward pass per batch.
+
+        `pairs`: list of dicts accepting the same keys as compare()
+                 (title_a/brand_a/description_a/specs_a and the _b twins).
+
+        This exists because the previous compare_batch() simply looped over
+        compare(), doing one tokenisation and one forward pass per pair. The
+        ranker calls this once per API request over a shortlist of up to 50
+        candidates, so that loop was 50 sequential GPU round-trips per request
+        -- the dominant source of latency in the service.
+
+        Padding is `longest` per batch rather than `max_length`: compare()
+        pads every input to 256 tokens regardless of content, which wastes
+        most of the compute on short e-commerce titles.
+        """
+        if not pairs:
+            return []
+
+        texts_a = [self._text(p.get("title_a", ""), p.get("brand_a", ""),
+                              p.get("specs_a", ""), p.get("description_a", "")) for p in pairs]
+        texts_b = [self._text(p.get("title_b", ""), p.get("brand_b", ""),
+                              p.get("specs_b", ""), p.get("description_b", "")) for p in pairs]
+
+        id2label = {int(k): v for k, v in self.model.config.id2label.items()}
+        num_labels = len(id2label)
+        results = []
+
+        for start in range(0, len(pairs), batch_size):
+            encoding = self.tokenizer(
+                texts_a[start:start + batch_size],
+                texts_b[start:start + batch_size],
+                truncation=True,
+                max_length=config.MAX_SEQ_LENGTH,
+                padding=True,
+                return_tensors="pt",
+            ).to(self.device)
+
+            probs = torch.softmax(self.model(**encoding).logits, dim=-1).cpu()
+
+            for row in probs:
+                if num_labels == 2:
+                    same_prob = float(row[1])
+                    label = int(same_prob >= threshold)
+                    results.append(ComparisonResult(
+                        similarity_score=same_prob * 100,
+                        prediction="Same Product" if label else "Different Product",
+                        label=label,
+                    ))
+                else:
+                    top = int(torch.argmax(row).item())
+                    relationship = id2label[top]
+                    results.append(ComparisonResult(
+                        similarity_score=float(row[top]) * 100,
+                        prediction=relationship.replace("_", " ").title(),
+                        label=int(relationship == "EXACT_MATCH"),
+                        relationship=relationship,
+                        all_probabilities={id2label[i]: float(row[i]) for i in range(num_labels)},
+                    ))
+        return results
+
+    @torch.no_grad()
     def compare_batch(self, pairs):
-        """pairs: list of dicts with title_a/specs_a/title_b/specs_b."""
-        return [
-            self.compare(
-                title_a=p["title_a"],
-                title_b=p["title_b"],
-                specs_a=p.get("specs_a", ""),
-                specs_b=p.get("specs_b", ""),
-            )
-            for p in pairs
-        ]
+        """Backwards-compatible alias; now genuinely batched via score_pairs()."""
+        return self.score_pairs(pairs)
 
 
 def _parse_args():

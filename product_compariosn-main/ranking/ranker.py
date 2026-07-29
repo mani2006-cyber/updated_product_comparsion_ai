@@ -39,6 +39,33 @@ def _build_reasons(original: Dict, candidate: Dict, relationship: str) -> List[s
     return reasons
 
 
+def _score_shortlist(comparer, original: Dict, shortlist: List[Dict]) -> List:
+    """Scores the whole shortlist in one batched call when the comparer
+    supports it, falling back to per-pair compare() when it does not.
+
+    The fallback is not dead code: ranking/test_ranking.py and tests/test_api.py
+    drive this with a stub exposing only compare(), and those tests are the
+    only coverage this logic has. Requiring score_pairs() would break them.
+    """
+    if not shortlist:
+        return []
+
+    pairs = [{
+        "title_a": original.get("title", ""),
+        "brand_a": original.get("brand", ""),
+        "description_a": original.get("description", ""),
+        "title_b": c.get("title", ""),
+        "brand_b": c.get("brand", ""),
+        "description_b": c.get("description", ""),
+    } for c in shortlist]
+
+    scorer = getattr(comparer, "score_pairs", None)
+    if callable(scorer):
+        return scorer(pairs)
+
+    return [comparer.compare(**p) for p in pairs]
+
+
 def rank_alternatives(
     original_product: Dict,
     candidate_pool: List[Dict],
@@ -62,21 +89,37 @@ def rank_alternatives(
         comparer = ProductComparer()
 
     shortlist = retrieve_candidates(original_product, candidate_pool)
+    results = _score_shortlist(comparer, original_product, shortlist)
 
     exact_match = None
     scored = []
 
-    for candidate in shortlist:
-        result = comparer.compare(
-            title_a=original_product.get("title", ""),
-            brand_a=original_product.get("brand", ""),
-            description_a=original_product.get("description", ""),
-            title_b=candidate.get("title", ""),
-            brand_b=candidate.get("brand", ""),
-            description_b=candidate.get("description", ""),
-        )
-        relationship = result.relationship or result.prediction
+    for candidate, result in zip(shortlist, results):
+        # A BINARY model returns relationship=None. Its prediction string is
+        # "Same Product"/"Different Product", which matches none of the 5-class
+        # names, so the old `relationship or prediction` fallback silently
+        # classified every candidate as neither an exact match nor an
+        # alternative -- every response came back empty. The two model shapes
+        # are therefore handled explicitly.
+        if result.relationship is None:
+            if result.label == 1:
+                if exact_match is None or result.similarity_score > exact_match["similarity_score"]:
+                    exact_match = {"title": candidate.get("title"),
+                                   "similarity_score": result.similarity_score}
+                continue
+            # Everything else is ranked by P(same product) and truncated by
+            # top_n. No extra cut-off is invented here: the shortlist is
+            # already category-filtered, and an arbitrary threshold is exactly
+            # the mistake that produced the unusable WEAKLY_SIMILAR class.
+            scored.append({
+                "title": candidate.get("title"),
+                "similarity_score": round(result.similarity_score / 100, 4),
+                "relationship": "SIMILAR_ALTERNATIVE",
+                "reasons": _build_reasons(original_product, candidate, "SIMILAR_ALTERNATIVE"),
+            })
+            continue
 
+        relationship = result.relationship
         if relationship == "EXACT_MATCH":
             if exact_match is None or result.similarity_score > exact_match["similarity_score"]:
                 exact_match = {"title": candidate.get("title"), "similarity_score": result.similarity_score}
