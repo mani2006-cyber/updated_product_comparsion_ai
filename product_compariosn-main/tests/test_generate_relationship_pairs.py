@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from generate_relationship_pairs import label_pair
 
@@ -49,6 +50,20 @@ def test_same_category_high_overlap_is_similar_alternative():
     assert label_pair(row) == "SIMILAR_ALTERNATIVE"
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Asserts the old Jaccard-threshold behaviour that was deliberately removed "
+        "when WEAKLY_SIMILAR was dropped (an audit of all 5,916 rows carrying that "
+        "label found only 12% had any measurable justification, from three mutually "
+        "incompatible rules). label_pair() now returns SIMILAR_ALTERNATIVE here. "
+        "The test is kept because it documents a real gap rather than a stale rule: "
+        "tier detection reads only numeric specs, so a tier stated in words -- "
+        "'basic model' vs 'premium noise cancelling flagship' -- is invisible to it. "
+        "Add lexical tier detection and this will XPASS (strict=True, so the suite "
+        "will tell you); at that point drop this marker."
+    ),
+)
 def test_same_category_low_overlap_is_weakly_similar():
     row = _row(
         product1_title="boAt Airdopes 300 TWS earbuds", product1_description="basic model",

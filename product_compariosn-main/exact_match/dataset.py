@@ -12,14 +12,19 @@ models were pretrained on for sentence-pair tasks (NLI, STS), which is
 why it transfers so well to "are these two products the same?".
 """
 
+import os
 from typing import Dict, List, Optional
 
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Dataset
-from transformers import PreTrainedTokenizerBase
+from transformers import DataCollatorWithPadding, PreTrainedTokenizerBase
 
 import config
+
+
+def _default_num_workers() -> int:
+    return min(4, os.cpu_count() or 1)
 
 
 class ProductPairDataset(Dataset):
@@ -40,17 +45,20 @@ class ProductPairDataset(Dataset):
     def __len__(self) -> int:
         return len(self.labels)
 
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Dict[str, List[int]]:
+        # Deliberately NOT padded here. Padding happens per batch in the
+        # collator, so a batch is only as wide as its longest pair instead of a
+        # flat MAX_SEQ_LENGTH. Product pairs average well under the cap, so most
+        # of the fixed-width tensor was padding the model computed and discarded.
+        # Truncation still applies -- max_length is the ceiling, not the target.
         encoding = self.tokenizer(
             self.text_a[idx],
             self.text_b[idx],
             truncation=True,
             max_length=self.max_length,
-            padding="max_length",
-            return_tensors="pt",
         )
-        item = {k: v.squeeze(0) for k, v in encoding.items()}
-        item["labels"] = torch.tensor(self.labels[idx], dtype=torch.long)
+        item = dict(encoding)
+        item["labels"] = self.labels[idx]
         return item
 
 
@@ -60,15 +68,16 @@ def build_dataloader(
     batch_size: int,
     shuffle: bool,
     max_length: int = config.MAX_SEQ_LENGTH,
-    num_workers: int = 2,
+    num_workers: Optional[int] = None,
 ) -> DataLoader:
     dataset = ProductPairDataset(df, tokenizer, max_length=max_length)
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
-        num_workers=num_workers,
+        num_workers=_default_num_workers() if num_workers is None else num_workers,
         pin_memory=torch.cuda.is_available(),
+        collate_fn=DataCollatorWithPadding(tokenizer=tokenizer, return_tensors="pt"),
         drop_last=False,
     )
 
