@@ -26,7 +26,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 import config
-from api.routes import compare
+from api.routes import compare, search
 from exact_match.inference import ProductComparer
 from utils import get_logger
 
@@ -64,6 +64,7 @@ async def lifespan(app: FastAPI):
     # route answers 503 rather than crashing every request with a 500.
     app.state.comparer = None
     app.state.model_dir = None
+    app.state.index = None
     try:
         model_dir = resolve_model_dir()
         app.state.comparer = ProductComparer(model_dir=model_dir)
@@ -72,11 +73,29 @@ async def lifespan(app: FastAPI):
         logger.info(f"Serving model from {model_dir} | classes: {labels}")
     except Exception:
         logger.exception("Model failed to load; /compare will return 503 until this is fixed.")
+
+    # The catalog index is OPTIONAL and loaded separately. /compare works
+    # without it (the caller supplies candidates); only /search needs it. A
+    # missing index therefore degrades one endpoint rather than the service.
+    index_dir = os.environ.get("INDEX_DIR", os.path.join(config.ROOT_DIR, "data", "product_index"))
+    if os.path.isfile(os.path.join(index_dir, "index.faiss")):
+        try:
+            from ranking.embedding_retrieval import ProductIndex
+            app.state.index = ProductIndex.load(index_dir)
+            logger.info(f"Loaded product index from {index_dir} "
+                        f"({len(app.state.index.products):,} products)")
+        except Exception:
+            logger.exception("Index failed to load; /search will return 503.")
+    else:
+        logger.warning(f"No product index at {index_dir}; /search will return 503. "
+                       "Build one with: python -m ranking.embedding_retrieval build "
+                       "--catalog <file> --out data/product_index")
     yield
 
 
 app = FastAPI(title="Product Comparison API", lifespan=lifespan)
 app.include_router(compare.router)
+app.include_router(search.router)
 
 
 @app.get("/health")
@@ -87,9 +106,23 @@ def health():
     comparer = getattr(app.state, "comparer", None)
     if comparer is None:
         return {"status": "degraded", "model_loaded": False}
+    index = getattr(app.state, "index", None)
+    # Every field is read defensively. A health check that raises is worse
+    # than one that reports "unknown": monitoring sees a 500 and cannot tell a
+    # dead service from a introspection quirk.
+    try:
+        num_labels = len(comparer.model.config.id2label)
+    except AttributeError:
+        num_labels = None
+    try:
+        catalog_size = len(index.products) if index is not None else 0
+    except AttributeError:
+        catalog_size = None
     return {
         "status": "ok",
         "model_loaded": True,
         "model_dir": getattr(app.state, "model_dir", None),
-        "num_labels": len(comparer.model.config.id2label),
+        "num_labels": num_labels,
+        "index_loaded": index is not None,
+        "catalog_size": catalog_size,
     }
