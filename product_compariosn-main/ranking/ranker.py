@@ -68,10 +68,12 @@ def _score_shortlist(comparer, original: Dict, shortlist: List[Dict]) -> List:
 
 def rank_alternatives(
     original_product: Dict,
-    candidate_pool: List[Dict],
+    candidate_pool: List[Dict] = None,
     comparer=None,
     top_n: int = 5,
     include_weakly_similar: bool = False,
+    index=None,
+    retrieve_k: int = 50,
 ) -> Dict:
     """
     original_product: dict with 'id', 'title', 'brand', 'description'
@@ -88,7 +90,19 @@ def rank_alternatives(
         from exact_match.inference import ProductComparer
         comparer = ProductComparer()
 
-    shortlist = retrieve_candidates(original_product, candidate_pool)
+    # Two retrieval modes:
+    #   index given -> embedding + FAISS search over a whole catalog, so the
+    #                  caller does not have to know the candidates in advance.
+    #                  Measured recall@50 = 100% on the current catalog, which
+    #                  is the ceiling on everything downstream: a match that is
+    #                  never retrieved is never re-ranked.
+    #   no index     -> the original keyword category filter over a pool the
+    #                  caller supplies. Kept because every existing test drives
+    #                  this path, and because it needs no index to be built.
+    if index is not None:
+        shortlist = index.search(original_product, k=retrieve_k)
+    else:
+        shortlist = retrieve_candidates(original_product, candidate_pool)
     results = _score_shortlist(comparer, original_product, shortlist)
 
     exact_match = None
