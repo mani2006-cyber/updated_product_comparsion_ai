@@ -54,7 +54,13 @@ Thumbs.db
 # ~40 min on a T4 via train_on_real_corpus.py -- see PROJECT_HANDOVER.pdf S7.
 # Glob, not a list: every new checkpoint directory was being added by hand and
 # trained_model_v8/ (541 MB) had already slipped through the gap.
-trained_model*/
+#
+# Contents are excluded rather than the directory itself, so the negation below
+# can still work. training_metadata.json MUST stay tracked: it carries
+# `serialization` and `inference_threshold`, and a checkpoint missing the first
+# silently drops match recall to zero (S2.3 / trap 6.5). It is ~1 KB.
+trained_model*/**
+!trained_model*/training_metadata.json
 trained_model_structured.zip
 outputs/
 

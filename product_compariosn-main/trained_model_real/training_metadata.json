@@ -9,6 +9,7 @@
   },
   "serialization": "colval",
   "trained_on": "WDC-Products + Amazon-Google + Walmart-Amazon + Abt-Buy (38,145 human-labelled pairs)",
-  "inference_threshold": 0.17,
-  "threshold_fitted_on": "real_corpus_valid.csv (n=6105, positives 10.0%); validation only, never test"
+  "inference_threshold": 0.5,
+  "threshold_fitted_on": "real_corpus_valid.csv (n=10605, positives 1113 / 10.5%); validation only, never test",
+  "threshold_note": "validation gain did not clear 1 SE (v7 +0.32, bootstrap SE 0.82 at 1,113 positives) -- kept the 0.5 default"
 }
