@@ -8,5 +8,7 @@
     "1": "same_product"
   },
   "serialization": "colval",
-  "trained_on": "WDC-Products + Amazon-Google + Walmart-Amazon + Abt-Buy (38,145 human-labelled pairs)"
+  "trained_on": "WDC-Products + Amazon-Google + Walmart-Amazon + Abt-Buy (38,145 human-labelled pairs)",
+  "inference_threshold": 0.17,
+  "threshold_fitted_on": "real_corpus_valid.csv (n=6105, positives 10.0%); validation only, never test"
 }

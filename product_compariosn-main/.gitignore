@@ -52,9 +52,9 @@ Thumbs.db
 # trained_model_real/ is ~549 MB. GitHub already warns about a 57 MB blob in
 # this repo. The checkpoint is kept as a zip artifact and can be rebuilt in
 # ~40 min on a T4 via train_on_real_corpus.py -- see PROJECT_HANDOVER.pdf S7.
-trained_model_real/
-trained_model/
-trained_model_v1/
+# Glob, not a list: every new checkpoint directory was being added by hand and
+# trained_model_v8/ (541 MB) had already slipped through the gap.
+trained_model*/
 trained_model_structured.zip
 outputs/
 

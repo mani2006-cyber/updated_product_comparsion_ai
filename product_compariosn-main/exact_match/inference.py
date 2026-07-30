@@ -81,14 +81,45 @@ class ProductComparer:
     """
 
     def __init__(self, model_dir: str = config.TRAINED_MODEL_DIR, device: str = None,
-                 serialization: str = None):
+                 serialization: str = None, threshold: float = None):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"Loading trained model from {model_dir} on {self.device}")
         self.tokenizer = AutoTokenizer.from_pretrained(model_dir)
         self.model = AutoModelForSequenceClassification.from_pretrained(model_dir).to(self.device)
         self.model.eval()
         self.serialization = serialization or self._detect_serialization(model_dir)
-        logger.info(f"Input serialization: {self.serialization}")
+        self.threshold = threshold if threshold is not None else self._detect_threshold(model_dir)
+        logger.info(f"Input serialization: {self.serialization} | "
+                    f"decision threshold: {self.threshold}")
+
+    @staticmethod
+    def _detect_threshold(model_dir: str) -> float:
+        """Reads the decision threshold recorded by calibrate_threshold.py.
+
+        0.5 is only optimal if the training positive rate happens to match the
+        serving one. It did not: moving from the 38k corpus (26.8% positive) to
+        the 78k LSPC corpus (20.6%) shifted the probability distribution far
+        enough that the best cut-point on WDC-UNSEEN was 0.94, and scoring at
+        0.5 cost 1.8 F1 there while precision fell 0.669 -> 0.612. The
+        threshold belongs to the checkpoint, not to a global constant, for the
+        same reason `serialization` does -- a mismatch does not raise, it just
+        quietly makes the model over-predict matches.
+        """
+        import json
+        import os
+        path = os.path.join(model_dir, "training_metadata.json")
+        try:
+            with open(path, encoding="utf-8") as fh:
+                value = json.load(fh).get("inference_threshold")
+            if value is not None and 0.0 < float(value) < 1.0:
+                return float(value)
+        except Exception:  # noqa: BLE001
+            pass
+        logger.warning(
+            "No 'inference_threshold' recorded in %s; falling back to "
+            "config.INFERENCE_THRESHOLD=%s. Run calibrate_threshold.py --write to fit one.",
+            path, config.INFERENCE_THRESHOLD)
+        return float(config.INFERENCE_THRESHOLD)
 
     @staticmethod
     def _detect_serialization(model_dir: str) -> str:
@@ -124,8 +155,12 @@ class ProductComparer:
         specs_b: str = "",
         description_a: str = "",
         description_b: str = "",
-        threshold: float = config.INFERENCE_THRESHOLD,
+        threshold: float = None,
     ) -> ComparisonResult:
+        # Resolved per call, not bound as a default argument. Default values are
+        # evaluated once at import, which is exactly how config.NUM_LABELS
+        # silently produced 2-class models when set after the import (trap 6.1).
+        threshold = self.threshold if threshold is None else threshold
         text_a = self._text(title_a, brand_a, specs_a, description_a)
         text_b = self._text(title_b, brand_b, specs_b, description_b)
 
@@ -166,7 +201,7 @@ class ProductComparer:
 
     @torch.no_grad()
     def score_pairs(self, pairs, batch_size: int = 32,
-                    threshold: float = config.INFERENCE_THRESHOLD):
+                    threshold: float = None):
         """Scores many pairs with REAL batching -- one forward pass per batch.
 
         `pairs`: list of dicts accepting the same keys as compare()
@@ -185,6 +220,7 @@ class ProductComparer:
         if not pairs:
             return []
 
+        threshold = self.threshold if threshold is None else threshold
         texts_a = [self._text(p.get("title_a", ""), p.get("brand_a", ""),
                               p.get("specs_a", ""), p.get("description_a", "")) for p in pairs]
         texts_b = [self._text(p.get("title_b", ""), p.get("brand_b", ""),
