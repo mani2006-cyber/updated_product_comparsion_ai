@@ -33,6 +33,22 @@ calibration is viable later if category is known at query time, but that is a
 different feature and is deliberately not built here. The per-benchmark optima
 are printed for diagnosis only, clearly marked as not shippable.
 
+A FITTED THRESHOLD MUST EARN ITS PLACE
+--------------------------------------
+Fitting always finds a threshold that beats the default on the data it fitted
+on -- that is what argmax does, and it happens whether or not the improvement
+is real. Measured here: v7 gained +0.31 and v8 +0.41 on validation, against a
+bootstrap F1 SE of ~0.8-1.2 at 1,113 positives. Neither clears 1 SE. v7's
+validation curve was nearly flat and its per-benchmark optima bimodal
+(0.16/0.31 against 0.77/0.88/0.95), so the argmax landed at one extreme;
+shipping it cost 0.30 mean F1 on test and 1.00/1.20 on WDC-SEEN/HALF-SEEN.
+
+So the fitted value is adopted only if it beats the default by at least
+--min-improvement-se validation SEs (default 1.0). Otherwise the default
+stands. The decision uses validation alone -- refusing to move on sub-noise
+evidence is not test-tuning, it is declining to act on a number that cannot be
+distinguished from zero.
+
 THRESHOLD SPREAD IS A SELECTION CRITERION, NOT JUST F1
 ------------------------------------------------------
 Because one number has to serve every domain, HOW FAR APART the per-benchmark
@@ -133,6 +149,30 @@ def f1_at(y: np.ndarray, p: np.ndarray, t: float) -> float:
     return float(f1_score(y, (p >= t).astype(int), zero_division=0))
 
 
+def bootstrap_f1_se(y: np.ndarray, p: np.ndarray, t: float,
+                    n_boot: int = 1000, seed: int = 0) -> float:
+    """Standard error of validation F1 at threshold `t`, by resampling.
+
+    Deliberately the SE of F1 ITSELF, not of the paired difference against 0.5.
+    The paired SE is much smaller, but the gain being tested was measured on the
+    same data that chose the threshold, so it is optimistically biased. Holding
+    it to a full F1 SE is the conservative guard against that selection effect.
+    """
+    rng = np.random.default_rng(seed)
+    n = len(y)
+    pred = (p >= t).astype(np.int8)
+    yy = np.asarray(y, dtype=np.int8)
+    out = np.empty(n_boot)
+    for i in range(n_boot):
+        idx = rng.integers(0, n, n)
+        yb, pb = yy[idx], pred[idx]
+        tp = int(np.count_nonzero((yb == 1) & (pb == 1)))
+        fp = int(np.count_nonzero((yb == 0) & (pb == 1)))
+        fn = int(np.count_nonzero((yb == 1) & (pb == 0)))
+        out[i] = 0.0 if tp == 0 else 2 * tp / (2 * tp + fp + fn)
+    return float(out.std(ddof=1))
+
+
 def fit_threshold(y: np.ndarray, p: np.ndarray) -> Tuple[float, float]:
     """Best F1 and its cut-point. Same 0.05..0.95 grid the existing sweep uses,
     so fitted and test-tuned numbers stay directly comparable."""
@@ -215,6 +255,9 @@ def main():
     ap.add_argument("--er-dir", default="data/er_magellan")
     ap.add_argument("--batch-size", type=int, default=64)
     ap.add_argument("--cache-dir", default="outputs/calibration")
+    ap.add_argument("--min-improvement-se", type=float, default=1.0,
+                    help="Validation F1 SEs the fitted threshold must beat the default "
+                         "by before it is adopted. 0 disables the gate.")
     ap.add_argument("--write", action="store_true",
                     help="Record the fitted threshold in the checkpoint's training_metadata.json")
     ap.add_argument("--progress", action="store_true",
@@ -227,6 +270,8 @@ def main():
 
     import pandas as pd
 
+    import config
+
     model, tok, device, match_idx = _load_model(args.model)
     print(f"model  {args.model}\ndevice {device}\n")
 
@@ -237,11 +282,39 @@ def main():
     p_val, y_val = score_split(model, tok, device, val.text_a, val.text_b,
                                val.label.to_numpy(), args.batch_size,
                                args.cache_dir, args.model, "valid", match_idx)
-    fit_f1, threshold = fit_threshold(y_val, p_val)
+    fit_f1, fitted = fit_threshold(y_val, p_val)
     base_f1 = f1_at(y_val, p_val, 0.5)
-    print(f"\n  validation n={len(y_val):,}  positives {y_val.mean():.1%}")
-    print(f"  F1 @ 0.50      {base_f1 * 100:6.2f}")
-    print(f"  F1 @ {threshold:.2f} (fitted) {fit_f1 * 100:6.2f}   <- threshold shipped\n")
+    default_t = float(config.INFERENCE_THRESHOLD)
+    print(f"\n  validation n={len(y_val):,}  positives {int(y_val.sum()):,} "
+          f"({y_val.mean():.1%})")
+    print(f"  F1 @ {default_t:.2f}      {base_f1 * 100:6.2f}")
+    print(f"  F1 @ {fitted:.2f} (fitted) {fit_f1 * 100:6.2f}")
+
+    # ---- minimum-improvement gate ----------------------------------------
+    # Do not move off the default on sub-noise evidence. Measured: v7 gained
+    # +0.31 and v8 +0.41 over 0.5 on validation, against an F1 SE of ~0.8-1.2
+    # at 1,113 positives -- neither clears 1 SE. Shipping v7's fitted 0.17
+    # anyway cost 0.30 mean F1 on test, and 1.00/1.20 on WDC-SEEN/HALF-SEEN.
+    # This is not test-tuning: the decision is made entirely on validation.
+    se = bootstrap_f1_se(y_val, p_val, fitted)
+    gain = fit_f1 - base_f1
+    need = args.min_improvement_se * se
+    print(f"\n  gain over default   {gain * 100:+6.2f}")
+    print(f"  validation F1 SE    {se * 100:6.2f}  (bootstrap, {1000:,} resamples)")
+    print(f"  required to move    {need * 100:6.2f}  "
+          f"({args.min_improvement_se:g} SE)")
+
+    if gain >= need:
+        threshold = fitted
+        print(f"  -> MOVED to {threshold:.2f}: gain clears the bar.\n")
+        gate = f"fitted {fitted:.2f}; gain {gain * 100:+.2f} >= {need * 100:.2f}"
+    else:
+        threshold = default_t
+        print(f"  -> KEPT {threshold:.2f}: the fitted {fitted:.2f} is not "
+              f"distinguishable from the default on this validation set.\n")
+        gate = (f"kept default {default_t:.2f}; fitted {fitted:.2f} gained only "
+                f"{gain * 100:+.2f} vs {need * 100:.2f} required "
+                f"({args.min_improvement_se:g} SE)")
 
     # A trained matcher scores ~84 here. Anything near chance means the wrong
     # checkpoint, not a weak one -- stop rather than emit numbers that look real.
@@ -320,7 +393,7 @@ def main():
         meta["inference_threshold"] = round(threshold, 4)
         meta["threshold_fitted_on"] = (
             f"{os.path.basename(args.valid)} (n={len(y_val)}, "
-            f"positives {y_val.mean():.1%}); validation only, never test"
+            f"positives {y_val.mean():.1%}); validation only, never test -- {gate}"
         )
         with open(meta_path, "w", encoding="utf-8") as fh:
             json.dump(meta, fh, indent=2)
