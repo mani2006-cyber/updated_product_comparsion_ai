@@ -85,3 +85,6 @@ data/_form_factor_product_pool.csv
 
 data/balanced_catalog.csv
 data/full_joined_catalog.csv
+
+# Generated deployment bundle (rebuild: python build_deploy.py --model)
+deploy/
