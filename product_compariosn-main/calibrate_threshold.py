@@ -67,6 +67,15 @@ import numpy as np
 
 
 def _load_model(model_dir: str):
+    """Loads a checkpoint and REFUSES anything that is not a binary matcher.
+
+    Without this check the script silently reads probs[:, 1] as P(match). On a
+    5-class checkpoint column 1 is a different class entirely, and the output
+    still looks like a result: measured on a mislabelled checkpoint, validation
+    F1 came out at 13.20 and the fitted threshold slid to the bottom of the
+    sweep (0.05) because the score column was noise. Same family as the
+    serialization bug -- wrong input, no exception, plausible-looking numbers.
+    """
     import torch
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
@@ -74,7 +83,24 @@ def _load_model(model_dir: str):
     tok = AutoTokenizer.from_pretrained(model_dir)
     model = AutoModelForSequenceClassification.from_pretrained(model_dir).to(device)
     model.eval()
-    return model, tok, device
+
+    id2label = {int(k): str(v) for k, v in model.config.id2label.items()}
+    if len(id2label) != 2:
+        raise SystemExit(
+            f"\n{model_dir} has {len(id2label)} labels: {id2label}\n"
+            "calibrate_threshold.py only handles BINARY same/different checkpoints.\n"
+            "A 5-class model here would be scored on the wrong probability column\n"
+            "and would produce numbers that look real but mean nothing."
+        )
+
+    # Find the match column by NAME rather than assuming index 1.
+    match_idx = next((i for i, n in id2label.items()
+                      if n.lower() in ("same_product", "match", "label_1", "1")), None)
+    if match_idx is None:
+        match_idx = 1
+        print(f"  NOTE: id2label={id2label} has no recognisable match class; "
+              f"assuming index 1.")
+    return model, tok, device, match_idx
 
 
 def _cache_path(cache_dir: str, model_dir: str, split: str) -> str:
@@ -83,7 +109,8 @@ def _cache_path(cache_dir: str, model_dir: str, split: str) -> str:
 
 
 def score_split(model, tok, device, text_a, text_b, y_true, batch_size,
-                cache_dir: str, model_dir: str, split: str) -> Tuple[np.ndarray, np.ndarray]:
+                cache_dir: str, model_dir: str, split: str,
+                match_idx: int = 1) -> Tuple[np.ndarray, np.ndarray]:
     """P(match) for one split, cached so re-runs cost nothing."""
     from evaluate_on_wdc import predict_probabilities
 
@@ -95,7 +122,7 @@ def score_split(model, tok, device, text_a, text_b, y_true, batch_size,
             return blob["p"], blob["y"]
 
     probs = predict_probabilities(model, tok, list(text_a), list(text_b), device, batch_size)
-    p, y = probs[:, 1], np.asarray(y_true, dtype=int)
+    p, y = probs[:, match_idx], np.asarray(y_true, dtype=int)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     np.savez_compressed(path, p=p, y=y)
     return p, y
@@ -200,7 +227,7 @@ def main():
 
     import pandas as pd
 
-    model, tok, device = _load_model(args.model)
+    model, tok, device, match_idx = _load_model(args.model)
     print(f"model  {args.model}\ndevice {device}\n")
 
     # ---- fit on validation, and only validation ---------------------------
@@ -209,12 +236,23 @@ def main():
     print("scoring validation (the ONLY data the threshold is fitted on):")
     p_val, y_val = score_split(model, tok, device, val.text_a, val.text_b,
                                val.label.to_numpy(), args.batch_size,
-                               args.cache_dir, args.model, "valid")
+                               args.cache_dir, args.model, "valid", match_idx)
     fit_f1, threshold = fit_threshold(y_val, p_val)
     base_f1 = f1_at(y_val, p_val, 0.5)
     print(f"\n  validation n={len(y_val):,}  positives {y_val.mean():.1%}")
     print(f"  F1 @ 0.50      {base_f1 * 100:6.2f}")
     print(f"  F1 @ {threshold:.2f} (fitted) {fit_f1 * 100:6.2f}   <- threshold shipped\n")
+
+    # A trained matcher scores ~84 here. Anything near chance means the wrong
+    # checkpoint, not a weak one -- stop rather than emit numbers that look real.
+    if fit_f1 < 0.40:
+        raise SystemExit(
+            f"\nValidation F1 is {fit_f1 * 100:.2f} at the BEST threshold on data this\n"
+            f"model should score ~84 on. That is not a weak checkpoint, it is the wrong\n"
+            f"one -- an untrained head, a different task, or a directory that is not the\n"
+            f"model you think it is. Check {args.model}/training_metadata.json and\n"
+            f"config.json before trusting anything downstream. Refusing to continue."
+        )
 
     # ---- apply that one number to every test benchmark --------------------
     print("scoring test benchmarks (threshold is NOT refitted on these):")
@@ -222,7 +260,7 @@ def main():
     rows = []
     for name, ta, tb, y_true in splits:
         p, y = score_split(model, tok, device, ta, tb, y_true, args.batch_size,
-                           args.cache_dir, args.model, name)
+                           args.cache_dir, args.model, name, match_idx)
         oracle_f1, oracle_t = fit_threshold(y, p)
         rows.append((name, f1_at(y, p, 0.5) * 100, f1_at(y, p, threshold) * 100,
                      oracle_f1 * 100, oracle_t))
@@ -261,8 +299,9 @@ def main():
         print(f"  test-tuned mean F1           {m_oracle:6.2f}   (unservable upper bound)")
         print(f"  cost of not knowing domain   {gap:6.2f}   <- lower is better")
         print()
+        # np.ptp(arr), not arr.ptp(): the method was removed in NumPy 2.0.
         print(f"  per-benchmark optimum spread {thrs.min():.2f} - {thrs.max():.2f}"
-              f"   range {thrs.ptp():.2f}, sd {thrs.std(ddof=0):.3f}   <- lower is better")
+              f"   range {np.ptp(thrs):.2f}, sd {thrs.std(ddof=0):.3f}   <- lower is better")
         print(f"  optima: " + ", ".join(f"{n.replace('Structured_', '').replace('Textual_', '')}"
                                         f"={t:.2f}" for n, _, _, _, t in rows))
         print()
