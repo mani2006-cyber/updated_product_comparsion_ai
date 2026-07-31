@@ -45,7 +45,11 @@ PACKAGES = {
                 "embedding_retrieval.py"],
     "data_quality": ["__init__.py", "contradiction_rules.py"],
 }
-MODEL_SRC = os.path.join(ROOT, "trained_model_real")
+DEFAULT_MODEL_SRC = os.path.join(ROOT, "trained_model_real")
+# The destination name is fixed because api/main.py resolves the checkpoint at
+# ROOT_DIR/trained_model_real. Which checkpoint goes in there is chosen by
+# --from, so shipping a new model never means overwriting the previous one --
+# v7 stays intact on disk while v11 deploys.
 MODEL_DST = os.path.join(DEPLOY, "trained_model_real")
 
 REQUIREMENTS = """\
@@ -134,7 +138,10 @@ def verify(with_model: bool) -> bool:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", action="store_true",
-                    help="Also copy trained_model_real/ (541 MB).")
+                    help="Also copy the checkpoint (~541 MB).")
+    ap.add_argument("--from", dest="model_src", default=DEFAULT_MODEL_SRC,
+                    help="Checkpoint directory to deploy. Defaults to "
+                         "trained_model_real/.")
     ap.add_argument("--clean", action="store_true", help="Remove deploy/ first.")
     args = ap.parse_args()
 
@@ -161,10 +168,13 @@ def main():
     print("  requirements.txt, run.sh, run.ps1, smoke_test.py, README.md")
 
     if args.model:
-        print(f"copying checkpoint ({MODEL_SRC} -> trained_model_real/) ...")
+        src = os.path.abspath(args.model_src)
+        if not os.path.isfile(os.path.join(src, "config.json")):
+            raise SystemExit(f"{src} is not a checkpoint directory (no config.json).")
+        print(f"copying checkpoint ({src} -> trained_model_real/) ...")
         if os.path.isdir(MODEL_DST):
             shutil.rmtree(MODEL_DST)
-        shutil.copytree(MODEL_SRC, MODEL_DST)
+        shutil.copytree(src, MODEL_DST)
 
     has_model = os.path.isdir(MODEL_DST)
     print("\nverifying:")

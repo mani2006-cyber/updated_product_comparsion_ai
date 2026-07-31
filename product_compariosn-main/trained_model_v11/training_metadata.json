@@ -1,0 +1,15 @@
+{
+  "base_model": "microsoft/deberta-v3-small",
+  "task": "product_pair_classification",
+  "num_labels": 2,
+  "max_seq_length": 256,
+  "label_map": {
+    "0": "different_product",
+    "1": "same_product"
+  },
+  "serialization": "colval",
+  "description_words": 20,
+  "trained_on": "real corpus: {'LSPC-hard': np.int64(19967), 'WDC-Products': np.int64(19607), 'Structured_Amazon-Google': np.int64(6674), 'Structured_Walmart-Amazon': np.int64(6142), 'Textual_Abt-Buy': np.int64(5722)}",
+  "inference_threshold": 0.5,
+  "threshold_fitted_on": "real_corpus_valid.csv (n=10605, positives 1113 / 10.5%); validation only, never test -- kept default 0.50; fitted 0.27 gained only +0.32 vs 0.80 required (1 SE)"
+}

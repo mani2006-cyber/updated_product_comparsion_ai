@@ -6,25 +6,34 @@ repo root.
 
 ## Which model is in here, and why
 
-**v7** — `deberta-v3-small` cross-encoder, binary, decision threshold **0.50**,
-description budget **100 words**.
+**v11** — `deberta-v3-small` cross-encoder, binary, decision threshold **0.50**,
+description budget **20 words**, trained on 58,112 pairs including 19,967
+similarity-mined hard pairs.
 
-Four checkpoints were trained and measured against each other. v7 wins because
-it is the only one with a statistically detectable advantage anywhere
-(benchmark mean 81.70 vs 80.07–81.91), ties every rival on Indian data within
-noise, and is the only one verified end to end from its archive.
+Five checkpoints were trained and measured. v11 is best on every axis that
+matters and is 24% cheaper to serve:
 
-| | v7 | desc20 v9 | hardneg v10 |
-|---|---|---|---|
-| Benchmark mean | **81.70** | 80.07 | 80.29 |
-| Indian F1 (SE 3.6) | 79.45 | 79.72 | 77.33 |
-| Indian errors | 30 | **29** | 34 |
-| hard-slice precision | 15.38 | **16.00** | 12.50 |
-| inference cost | 1.00x | **0.76x** | **0.76x** |
+| | v7 | desc20 v9 | hardneg v10 | **v11** |
+|---|---|---|---|---|
+| Benchmark mean | 81.70 | 80.07 | 80.29 | **82.26** |
+| WDC-UNSEEN | 74.78 | — | 72.23 | **75.52** |
+| Indian F1 (SE 3.6) | 79.45 | 79.72 | 77.33 | **80.85** |
+| Indian precision | 69.88 | 71.25 | 66.67 | **73.08** |
+| Indian errors | 30 | 29 | 34 | **27** |
+| hard-slice precision | 15.38 | 16.00 | 12.50 | **17.39** |
+| cost of not knowing | 1.04 | 2.29 | 1.91 | **0.63** |
+| inference cost | 1.00x | 0.76x | 0.76x | **0.76x** |
 
-`desc20 v9` is a legitimate swap if inference cost matters — statistically
-identical on Indian data and 24% cheaper — but it early-stopped an epoch sooner
-than v7, so its benchmark deficit is unresolved. Settle that before switching.
+WDC-UNSEEN 75.52 beats the published RoBERTa baseline (71.14) by 4.38, the
+widest margin this project has recorded.
+
+**A caution about how much of this to believe.** v10 and v11 are the SAME
+recipe on the SAME corpus, differing only by random seed, and they span
+80.29-82.26 on benchmarks, 77.33-80.85 on Indian F1 and 12.50-17.39 on
+hard-slice precision. Seed variance is therefore larger than most differences
+in the table above. v11 is genuinely the best checkpoint measured, but a 1-2
+point gap between recipes here is not evidence about the recipe. Future
+comparisons need 2-3 seeds each.
 
 ## Known limits of this model — read before trusting an answer
 
@@ -32,23 +41,25 @@ Measured on 190 hand-labelled real Indian e-commerce pairs:
 
 | slice | F1 | note |
 |---|---|---|
-| easy | **100.00** | different categories, obvious duplicates |
-| medium | 89.55 | ordinary cross-merchant matching |
-| **hard** | **25.81** | precision **15.38%** |
+| easy | **97.96** | different categories, obvious duplicates |
+| medium | 90.62 | ordinary cross-merchant matching |
+| **hard** | **28.57** | precision **17.39%** |
 
 The model is excellent where the distinction is lexically obvious and **fails
-on near-misses**, over-predicting "same product" (25 false positives against 5
-false negatives). Confirmed reproducible across four independently trained
-checkpoints, so it is a property of the training data, not a bad seed.
+on near-misses**, over-predicting "same product" (21 false positives against 6
+false negatives). Hard-slice precision has never exceeded 17.39 across five
+independently trained checkpoints spanning three corpora, so this is a property
+of the available training data, not a bad seed.
 
-Specific failures, each scored above 99% confidence:
+Specific failures on v11, each scored above 98% confidence:
 
 ```
-Noise Buds VS104        vs  Noise Buds VS104 Max      99.99%
-boAt Airdopes 141       vs  boAt Airdopes 141 Pro     99.60%
-JBL Tune 215 (neckband) vs  JBL Tune 215TWS           99.96%
-genuine boAt Airdopes   vs  "Thirty First For Boat"   99.92%
-Airdopes 141 Bold Black vs  Airdopes 141 Active Black 99.97%
+JBL Tune 215 (neckband) vs  JBL Tune 215TWS             99.95%
+Noise Buds VS104        vs  Noise Buds VS104 Max        99.86%
+Mamaearth 150ml 2-pack  vs  Mamaearth 100ml 2-pack      99.19%
+genuine boAt Airdopes   vs  "Thirty First For Boat"     99.05%
+genuine OnePlus Z2      vs  "Compatible with OnePlus"   98.12%
+Nike Revolution 6 std   vs  Revolution 6 4E (wide)      97.41%
 ```
 
 **Practical consequence:** do not auto-accept a match on score alone for
