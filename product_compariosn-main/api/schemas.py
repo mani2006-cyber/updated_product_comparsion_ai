@@ -47,6 +47,12 @@ class SimilarProduct(BaseModel):
 class CompareResponse(BaseModel):
     original_product: str
     exact_match: Optional[ExactMatch] = None
+    # Every OTHER candidate the model also judged to be the same product,
+    # best-first. `exact_match` is a single slot, but several merchants listing
+    # one product is the normal case for a price comparison engine -- these used
+    # to be silently discarded. Defaults to [] so existing clients are
+    # unaffected; the field is additive.
+    other_matches: List[ExactMatch] = []
     similar_products: List[SimilarProduct]
 
 

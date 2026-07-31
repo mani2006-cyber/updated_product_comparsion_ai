@@ -98,6 +98,49 @@ def test_binary_model_returns_ranked_alternatives():
     assert scores == sorted(scores, reverse=True)
 
 
+def test_every_match_is_returned_not_just_the_best():
+    """The bug this replaces: `exact_match` was one slot and every other
+    candidate scoring label=1 was dropped by a `continue`, so a response could
+    silently lose most of the right answers. Observed live on three Garnier
+    listings at 99.9878 / 99.9853 / 99.9848 -- one returned, two deleted.
+    """
+    candidates = CANDIDATES + [
+        {"id": "P6", "title": "boAt Airdopes 300 (Pack of 2)", "brand": "boAt",
+         "description": "TWS earbuds, 50 hour battery"},
+        {"id": "P7", "title": "boAt Airdopes 300 Blue", "brand": "boAt",
+         "description": "TWS earbuds, 50 hour battery"},
+    ]
+    scores = dict(SCORES)
+    scores["boAt Airdopes 300 (Pack of 2)"] = 96.0
+    scores["boAt Airdopes 300 Blue"] = 95.0
+
+    result = rank_alternatives(ORIGINAL, candidates, comparer=_BinaryComparer(scores))
+
+    assert result["exact_match"]["title"] == "boAt Airdopes 300 Black"   # highest, 97.0
+    others = [m["title"] for m in result["other_matches"]]
+    assert "boAt Airdopes 300 (Pack of 2)" in others
+    assert "boAt Airdopes 300 Blue" in others
+    assert "GOBOULT W60" in others, "61.0 is over the 50.0 threshold, so it is a match too"
+
+    # best-first, and the winner is never repeated in other_matches
+    scores_out = [m["similarity_score"] for m in result["other_matches"]]
+    assert scores_out == sorted(scores_out, reverse=True)
+    assert "boAt Airdopes 300 Black" not in others
+
+    # nothing the model called a match may go missing
+    returned = set(others) | {result["exact_match"]["title"]}
+    expected = {t for t, s in scores.items() if s >= 50.0}
+    assert returned == expected, f"lost {expected - returned}"
+
+
+def test_no_matches_leaves_exact_match_none_and_other_matches_empty():
+    result = rank_alternatives(
+        ORIGINAL, CANDIDATES,
+        comparer=_BinaryComparer({k: 10.0 for k in SCORES}))
+    assert result["exact_match"] is None
+    assert result["other_matches"] == []
+
+
 def test_shortlist_is_scored_in_a_single_batched_call():
     comparer = _BinaryComparer(SCORES)
     rank_alternatives(ORIGINAL, CANDIDATES, comparer=comparer)

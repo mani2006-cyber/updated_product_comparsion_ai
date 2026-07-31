@@ -105,7 +105,17 @@ def rank_alternatives(
         shortlist = retrieve_candidates(original_product, candidate_pool)
     results = _score_shortlist(comparer, original_product, shortlist)
 
-    exact_match = None
+    # EVERY candidate the model calls a match is kept. The previous version had
+    # a single `exact_match` slot and `continue`d past the rest, so any other
+    # match was deleted from the response -- not ranked lower, absent. Measured
+    # on three Garnier listings scoring 99.9878 / 99.9853 / 99.9848 (all
+    # label=1): one was returned and two vanished, leaving similar_products
+    # empty. At a 0.003 margin which one won the slot was arbitrary.
+    #
+    # That destroys the primary use case: retrieval hands this ~50 candidates,
+    # and several merchants selling one product is the normal case for a price
+    # comparison engine, not an edge case.
+    matches: List[Dict] = []
     scored = []
 
     for candidate, result in zip(shortlist, results):
@@ -117,9 +127,8 @@ def rank_alternatives(
         # are therefore handled explicitly.
         if result.relationship is None:
             if result.label == 1:
-                if exact_match is None or result.similarity_score > exact_match["similarity_score"]:
-                    exact_match = {"title": candidate.get("title"),
-                                   "similarity_score": result.similarity_score}
+                matches.append({"title": candidate.get("title"),
+                                "similarity_score": result.similarity_score})
                 continue
             # Everything else is ranked by P(same product) and truncated by
             # top_n. No extra cut-off is invented here: the shortlist is
@@ -135,8 +144,8 @@ def rank_alternatives(
 
         relationship = result.relationship
         if relationship == "EXACT_MATCH":
-            if exact_match is None or result.similarity_score > exact_match["similarity_score"]:
-                exact_match = {"title": candidate.get("title"), "similarity_score": result.similarity_score}
+            matches.append({"title": candidate.get("title"),
+                            "similarity_score": result.similarity_score})
             continue
 
         include = relationship in ALTERNATIVE_RELATIONSHIPS or (
@@ -152,8 +161,15 @@ def rank_alternatives(
 
     scored.sort(key=lambda r: r["similarity_score"], reverse=True)
 
+    # The best match keeps the `exact_match` slot for backwards compatibility;
+    # the rest go to `other_matches` instead of being discarded. Truncated by
+    # top_n, which is the caller's own explicit bound -- unlike the silent drop
+    # this replaces.
+    matches.sort(key=lambda m: m["similarity_score"], reverse=True)
+
     return {
         "original_product": original_product.get("title"),
-        "exact_match": exact_match,
+        "exact_match": matches[0] if matches else None,
+        "other_matches": matches[1:][:top_n],
         "similar_products": scored[:top_n],
     }
