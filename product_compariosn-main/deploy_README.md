@@ -148,6 +148,17 @@ that but passes trivially on a model that says "same" to everything; a
 non-match test catches the always-yes model but a broken model passes it too.
 Either check alone can be green while the service is useless.
 
+### 1b. Under load
+
+```bash
+python load_test.py
+```
+
+Measures latency against candidate count, throughput and tail latency at 1/2/4/8
+concurrent callers, memory drift under sustained load, and 11 malformed-input
+cases. Exits non-zero if it finds a blocker. Takes ~2 minutes; see *Measured
+production behaviour* below for what the last run showed.
+
 ### 2. By hand
 
 Health — `model_loaded` must be `true` and `num_labels` must be `2`:
@@ -213,8 +224,56 @@ contains `"serialization": "colval"`. A checkpoint missing that field falls
 back to the wrong format and takes match recall to zero while `/health` still
 reports `ok`.
 
+## Measured production behaviour
+
+From `load_test.py` against this bundle on CPU. Absolute numbers will improve
+on a GPU; the **shapes** will not.
+
+**Throughput does not scale with concurrency.** This is the headline finding:
+
+| workers | req/s | median ms | p95 ms | p99 ms |
+|---|---|---|---|---|
+| 1 | 2.04 | 464 | 637 | 767 |
+| 2 | 2.44 | 818 | 877 | 889 |
+| 4 | 2.40 | 1,659 | 1,730 | 1,821 |
+| 8 | 2.29 | **3,450** | 3,999 | 4,031 |
+
+Throughput is flat at ~2.3 req/s from 1 worker to 8, while latency grows almost
+exactly linearly. Requests are **serialising**: one model instance, one process,
+GIL-bound tokenisation, and no batching across requests. Adding callers does not
+add capacity — it only adds queueing, and the 8th caller waits 3.4 seconds for
+work that takes 0.46 seconds alone.
+
+`uvicorn api.main:app --workers N` is the standard fix (N independent processes,
+each with its own model). Budget ~1 GB RSS per worker, and note the lifespan
+loads the checkpoint per process, so startup cost multiplies too.
+
+**Latency scales with the shortlist**, which is the DoS surface:
+
+| candidates | median ms |
+|---|---|
+| 1 | 114 |
+| 10 | 452 |
+| 50 | 2,299 |
+| 200 (the cap) | 2,180 |
+
+One caller sending the maximum 200 candidates occupies the service for ~2.2 s.
+With no rate limit, a handful of such callers is a denial of service, and no
+authentication means anyone who reaches the port can do it.
+
+**Memory nearly doubles under load**: RSS 547 MB at rest → 980 MB after the
+run. Latency stayed flat across a 20 s sustained test (+1% first half to second
+half), so this reads as allocator growth rather than a leak — but size capacity
+on ~1 GB per worker, not on the idle figure.
+
+**Robustness: 11/11 passed.** Empty/missing fields, a 201-candidate payload,
+out-of-range `top_n`, null and empty titles, a 100k-character title, unicode and
+emoji, `<script>` tags, wrong types, and malformed JSON all return correct 4xx
+codes or handle cleanly. No 5xx, and no traceback leaked to a caller.
+
 ## Known limits
 
+- **Single-process throughput ceiling** (above) — use `--workers N`
 - No auth, no rate limiting (above)
 - `/search` returns 503 unless a FAISS index is present at `data/product_index`
   or `INDEX_DIR`

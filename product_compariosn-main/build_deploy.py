@@ -163,9 +163,11 @@ def main():
             fh.write(body)
     shutil.copy2(os.path.join(ROOT, "deploy_smoke_test.py"),
                  os.path.join(DEPLOY, "smoke_test.py"))
+    shutil.copy2(os.path.join(ROOT, "deploy_load_test.py"),
+                 os.path.join(DEPLOY, "load_test.py"))
     shutil.copy2(os.path.join(ROOT, "deploy_README.md"),
                  os.path.join(DEPLOY, "README.md"))
-    print("  requirements.txt, run.sh, run.ps1, smoke_test.py, README.md")
+    print("  requirements.txt, run.sh, run.ps1, smoke_test.py, load_test.py, README.md")
 
     if args.model:
         src = os.path.abspath(args.model_src)
