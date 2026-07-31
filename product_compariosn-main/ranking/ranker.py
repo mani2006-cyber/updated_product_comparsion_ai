@@ -136,7 +136,12 @@ def rank_alternatives(
             # the mistake that produced the unusable WEAKLY_SIMILAR class.
             scored.append({
                 "title": candidate.get("title"),
-                "similarity_score": round(result.similarity_score / 100, 4),
+                # 0-100, the SAME scale as exact_match and other_matches. This
+                # used to divide by 100, so one response carried a field of the
+                # same name in two different units: exact_match 99.85 alongside
+                # similar_products 0.0492. Any client comparing or thresholding
+                # across the two was wrong by 100x, and nothing raised.
+                "similarity_score": round(result.similarity_score, 4),
                 "relationship": "SIMILAR_ALTERNATIVE",
                 "reasons": _build_reasons(original_product, candidate, "SIMILAR_ALTERNATIVE"),
             })
@@ -154,7 +159,12 @@ def rank_alternatives(
         if include:
             scored.append({
                 "title": candidate.get("title"),
-                "similarity_score": round(result.similarity_score / 100, 4),
+                # 0-100, the SAME scale as exact_match and other_matches. This
+                # used to divide by 100, so one response carried a field of the
+                # same name in two different units: exact_match 99.85 alongside
+                # similar_products 0.0492. Any client comparing or thresholding
+                # across the two was wrong by 100x, and nothing raised.
+                "similarity_score": round(result.similarity_score, 4),
                 "relationship": relationship,
                 "reasons": _build_reasons(original_product, candidate, relationship),
             })

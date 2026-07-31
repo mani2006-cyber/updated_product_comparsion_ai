@@ -133,6 +133,27 @@ def test_every_match_is_returned_not_just_the_best():
     assert returned == expected, f"lost {expected - returned}"
 
 
+def test_similarity_scores_use_one_scale_across_the_whole_response():
+    """exact_match, other_matches and similar_products all report 0-100.
+
+    similar_products used to divide by 100, so a single response carried
+    `similarity_score: 99.85` next to `similarity_score: 0.0492` under the same
+    field name. A client thresholding across both was wrong by 100x and nothing
+    raised.
+    """
+    result = rank_alternatives(ORIGINAL, CANDIDATES, comparer=_BinaryComparer(SCORES))
+    alt = next(p for p in result["similar_products"]
+               if p["title"] == "NOISE Buds VS404")
+    assert alt["similarity_score"] == 42.0, alt          # not 0.42
+    assert result["exact_match"]["similarity_score"] == 97.0
+
+    every = ([result["exact_match"]["similarity_score"]]
+             + [m["similarity_score"] for m in result["other_matches"]]
+             + [p["similarity_score"] for p in result["similar_products"]])
+    assert all(0.0 <= s <= 100.0 for s in every), every
+    assert any(s > 1.0 for s in every), "all scores <= 1.0 suggests a 0-1 scale crept back"
+
+
 def test_no_matches_leaves_exact_match_none_and_other_matches_empty():
     result = rank_alternatives(
         ORIGINAL, CANDIDATES,
