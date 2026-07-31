@@ -53,13 +53,22 @@ class ComparisonResult:
             text += f"\nRelationship: {self.relationship}"
         return text
 
-def _serialize_colval(title: str, brand: str = "", description: str = "") -> str:
-    """Ditto-style `COL attr VAL value` used by the WDC / ER-Magellan corpora."""
+def _serialize_colval(title: str, brand: str = "", description: str = "",
+                      description_words: int = 100) -> str:
+    """Ditto-style `COL attr VAL value` used by the WDC / ER-Magellan corpora.
+
+    description_words defaults to 100 -- the budget every checkpoint before
+    August 2026 was trained with. It is NOT read from config here on purpose:
+    the budget belongs to the checkpoint, exactly like `serialization`, because
+    serving a model a different budget than it trained on is a silent accuracy
+    loss rather than an error (trap 2.3). ProductComparer reads it from
+    training_metadata.json and passes it in.
+    """
     def words(value, limit):
         return " ".join(str(value or "").split(" ")[:limit]).strip()
     return (f"COL brand VAL {words(brand, 5)} "
             f"COL title VAL {words(title, 50)} "
-            f"COL description VAL {words(description, 100)}").strip()
+            f"COL description VAL {words(description, description_words)}").strip()
 
 
 class ProductComparer:
@@ -89,8 +98,36 @@ class ProductComparer:
         self.model.eval()
         self.serialization = serialization or self._detect_serialization(model_dir)
         self.threshold = threshold if threshold is not None else self._detect_threshold(model_dir)
+        self.description_words = self._detect_description_words(model_dir)
         logger.info(f"Input serialization: {self.serialization} | "
-                    f"decision threshold: {self.threshold}")
+                    f"decision threshold: {self.threshold} | "
+                    f"description budget: {self.description_words}w")
+
+    @staticmethod
+    def _detect_description_words(model_dir: str) -> int:
+        """How many description words this checkpoint was trained on.
+
+        Measured on validation: 100w F1 84.38, 50w 84.48, 20w 83.91, 0w 81.84,
+        against a bootstrap SE of 0.89. So 20 words costs nothing measurable
+        while cutting mean tokens 111.7 -> 84.9 and dropping the fraction of
+        pairs hitting the 256 cap from 5.3% to 0.1%; dropping the description
+        entirely costs 2.54 F1, which is ~2.9 SE and real.
+
+        Absent means 100: every checkpoint trained before this was measured.
+        Guessing the new default for an old model would silently change its
+        input and cost accuracy without raising.
+        """
+        import json
+        import os
+        path = os.path.join(model_dir, "training_metadata.json")
+        try:
+            with open(path, encoding="utf-8") as fh:
+                value = json.load(fh).get("description_words")
+            if value is not None and int(value) >= 0:
+                return int(value)
+        except Exception:  # noqa: BLE001
+            pass
+        return 100
 
     @staticmethod
     def _detect_threshold(model_dir: str) -> float:
@@ -141,7 +178,8 @@ class ProductComparer:
 
     def _text(self, title: str, brand: str = "", specs: str = "", description: str = "") -> str:
         if self.serialization == "colval":
-            return _serialize_colval(title, brand, specs or description)
+            return _serialize_colval(title, brand, specs or description,
+                                     description_words=self.description_words)
         return build_product_text(title, brand=brand, specs=specs, description=description)
 
     @torch.no_grad()

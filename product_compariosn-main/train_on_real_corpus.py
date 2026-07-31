@@ -135,6 +135,11 @@ def main():
     except Exception:  # noqa: BLE001
         meta = {}
     meta["serialization"] = "colval"
+    # The description budget belongs to the checkpoint for the same reason the
+    # serialization does: feeding a model a different budget than it trained on
+    # costs accuracy silently. ProductComparer reads this and falls back to 100
+    # for checkpoints written before the field existed.
+    meta["description_words"] = int(config.DESCRIPTION_WORDS)
     meta["trained_on"] = f"real corpus: {dict(train_df['source'].value_counts())}"
     with open(meta_path, "w", encoding="utf-8") as fh:
         json.dump(meta, fh, indent=2)

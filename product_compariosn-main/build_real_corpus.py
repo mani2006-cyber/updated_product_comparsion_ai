@@ -54,6 +54,8 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
+import config
+
 ER_DIR = "data/er_magellan"
 OUT_TRAIN = "data/real_corpus_train.csv"
 OUT_VALID = "data/real_corpus_valid.csv"
@@ -99,7 +101,7 @@ def serialize_wdc(row: dict, side: str) -> str:
     model. Field order and word limits copied from the WDC baseline code."""
     return (f"COL brand VAL {_words(row.get(f'brand_{side}'), 5)} "
             f"COL title VAL {_words(row.get(f'title_{side}'), 50)} "
-            f"COL description VAL {_words(row.get(f'description_{side}'), 100)}").strip()
+            f"COL description VAL {_words(row.get(f'description_{side}'), config.DESCRIPTION_WORDS)}").strip()
 
 
 def load_wdc(work: str, size: str) -> Dict[str, pd.DataFrame]:

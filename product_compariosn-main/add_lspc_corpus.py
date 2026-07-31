@@ -46,6 +46,8 @@ from typing import Dict, List, Set, Tuple
 
 import pandas as pd
 
+import config
+
 CATEGORIES = ["computers", "watches", "shoes", "cameras"]
 OUT_TRAIN = "data/real_corpus_train.csv"
 OUT_VALID = "data/real_corpus_valid.csv"
@@ -76,7 +78,7 @@ def _words(v, n: int) -> str:
 def serialize(row: dict, side: str) -> str:
     return (f"COL brand VAL {_words(row.get(f'brand_{side}'), 5)} "
             f"COL title VAL {_words(row.get(f'title_{side}'), 50)} "
-            f"COL description VAL {_words(row.get(f'description_{side}'), 100)}").strip()
+            f"COL description VAL {_words(row.get(f'description_{side}'), config.DESCRIPTION_WORDS)}").strip()
 
 
 def load_lspc(categories: List[str], size: str) -> Dict[str, pd.DataFrame]:
@@ -100,7 +102,9 @@ def load_lspc(categories: List[str], size: str) -> Dict[str, pd.DataFrame]:
 
     frames: Dict[str, List[pd.DataFrame]] = {"train": [], "valid": []}
     for cat in categories:
-        config = f"{cat}_{size}"
+        # NOT named `config` -- that shadows the module-level `import config`
+        # this file now depends on for DESCRIPTION_WORDS.
+        subset = f"{cat}_{size}"
         for split, key in (("train", "train"), ("valid", "valid")):
             filename = f"{cat}/{key}_{size}.json.gz"
             try:
@@ -108,7 +112,7 @@ def load_lspc(categories: List[str], size: str) -> Dict[str, pd.DataFrame]:
                 with gzip.open(path, "rt", encoding="utf-8") as fh:
                     rows = [json.loads(line) for line in fh if line.strip()]
             except Exception as exc:  # noqa: BLE001
-                print(f"  {config}/{key}: unavailable ({exc})")
+                print(f"  {subset}/{key}: unavailable ({exc})")
                 continue
             frames[split].append(pd.DataFrame({
                 "text_a": [serialize(r, "left") for r in rows],
@@ -118,7 +122,7 @@ def load_lspc(categories: List[str], size: str) -> Dict[str, pd.DataFrame]:
                 "raw_a": [r.get("title_left") or "" for r in rows],
                 "raw_b": [r.get("title_right") or "" for r in rows],
             }))
-            print(f"  {config}/{key}: {len(rows):,} pairs")
+            print(f"  {subset}/{key}: {len(rows):,} pairs")
     return {k: pd.concat(v, ignore_index=True) for k, v in frames.items() if v}
 
 

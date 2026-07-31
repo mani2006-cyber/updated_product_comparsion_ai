@@ -143,6 +143,29 @@ PRIMARY_METRIC = "f1"                # accuracy | precision | recall | f1 | roc_
 # --------------------------------------------------------------------------
 INFERENCE_THRESHOLD = 0.5            # similarity score >= threshold -> "Same Product"
 
+# Words of `description` kept when serializing a product for the cross-encoder.
+#
+# Measured on the 10,605-pair validation set (bootstrap F1 SE 0.89):
+#
+#     budget   F1      mean tokens   at 256-cap
+#      100w    84.38      111.7          5.3%
+#       50w    84.48      101.7          0.7%
+#       20w    83.91       84.9          0.1%
+#        0w    81.84       54.6          0.0%
+#
+# 20 words costs 0.47 F1 -- half a standard error, not a real loss -- for 24%
+# fewer tokens. Dropping the description entirely costs 2.54, about 2.9 SE, so
+# the field IS earning its place; only its tail is not. The cap fraction going
+# 5.3% -> 0.1% matters more than the mean: batch padding follows the longest
+# sample, so this is what lets dynamic padding actually pay.
+#
+# CHANGING THIS ONLY AFFECTS MODELS TRAINED AFTERWARDS. The budget is recorded
+# in each checkpoint's training_metadata.json and ProductComparer reads it from
+# there, defaulting to 100 for checkpoints that predate the field. Serving a
+# model a different budget than it trained on does not raise -- it quietly
+# costs accuracy, which is trap 2.3 all over again.
+DESCRIPTION_WORDS = 20
+
 
 @dataclass
 class RunConfig:
