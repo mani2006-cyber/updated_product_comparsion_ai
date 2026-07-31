@@ -199,6 +199,39 @@ All values below are measured on this checkpoint, not estimated.
 | Empty `candidates` | HTTP 422 |
 | No model found | HTTP 503, not a crash |
 
+### ⚠️ `similar_products` is not a ranked list of alternatives
+
+It is **"everything that was not a match"**, and its ordering carries no
+information. The served model is binary — it answers *"is this the same
+purchasable product?"* and nothing else. For every genuine alternative the
+answer is a confident no, so the score collapses to near zero for all of them.
+
+Measured, one Philips air fryer against three candidates:
+
+```
+Havells air fryer      0.02
+Morphy Richards OTG    0.01
+Logitech keyboard      0.01     <- a keyboard, 0.01 from a rival air fryer
+```
+
+Two further limits compound it:
+
+- **The category filter is a keyword heuristic with an `OTHER` catch-all.**
+  Air fryers, ovens and keyboards all resolve to `OTHER`, so they count as the
+  same category and pass together. `candidate_retrieval.py` documents itself as
+  a placeholder for a classifier that was never built.
+- **`relationship` is always `SIMILAR_ALTERNATIVE`** on this model. That is the
+  label for any non-match, not a finding that two items are alike.
+
+**So: do not show this list to a user as "most similar first", and do not
+threshold the score to decide relatedness.** Use `exact_match` and
+`other_matches`, which the model genuinely produces. Treat `similar_products`
+as "candidates we ruled out", unordered.
+
+Real alternative ranking needs a relatedness signal the cross-encoder cannot
+produce. The bi-encoder behind `/search` computes exactly that (cosine
+similarity over embeddings) and is the intended basis for it later.
+
 **`other_matches` is why candidate counts must balance.** `exact_match` is a
 single slot, but several merchants listing one product is the normal case for
 price comparison — the whole point of the service. Every additional candidate

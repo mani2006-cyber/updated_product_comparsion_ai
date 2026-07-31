@@ -38,8 +38,36 @@ class ExactMatch(BaseModel):
 
 
 class SimilarProduct(BaseModel):
+    """A candidate the model judged NOT to be the same product.
+
+    THIS IS NOT A RANKED LIST OF ALTERNATIVES, despite the name. The served
+    model is binary -- it answers "is this the same purchasable product?" and
+    nothing else. For every genuine alternative the answer is a confident no,
+    so `similarity_score` collapses to near zero for all of them and the
+    ordering between them carries no information.
+
+    Measured, comparing a Philips air fryer against three candidates:
+
+        Havells air fryer      0.02
+        Morphy Richards OTG    0.01
+        Logitech keyboard      0.01
+
+    A competing air fryer and a Bluetooth keyboard land within 0.01 of each
+    other. Do not present this order to a user as "most similar first", and do
+    not threshold on the score to decide relatedness -- it measures the
+    probability of being the SAME product, which is uniformly ~0 here.
+
+    `relationship` is always "SIMILAR_ALTERNATIVE" on the binary model. That is
+    the label given to anything that is not a match; it is not a judgment that
+    the two items are similar.
+
+    Ranking true alternatives needs a relatedness signal the cross-encoder does
+    not produce. The bi-encoder behind /search does produce one (cosine
+    similarity over embeddings) and is the intended basis for this later.
+    """
+
     title: str
-    similarity_score: float
+    similarity_score: float   # 0-100, same scale as ExactMatch
     relationship: str
     reasons: List[str]
 

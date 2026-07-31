@@ -14,6 +14,24 @@ response matching the JSON shape from the original spec:
         ...
       ]
     }
+
+WHAT similar_products IS AND IS NOT
+-----------------------------------
+On the binary model it is "everything that was not a match", ordered by
+P(same product). Since that probability is ~0 for every genuine alternative,
+the ordering is noise -- a rival air fryer and a Bluetooth keyboard scored 0.02
+and 0.01 against the same query. See api/schemas.py:SimilarProduct.
+
+Two upstream limits make it weaker still:
+
+  * retrieve_candidates() filters by categorize(), a keyword heuristic with an
+    OTHER catch-all. Air fryers, ovens and keyboards all land in OTHER, so they
+    count as the same category and survive the filter together.
+  * "SIMILAR_ALTERNATIVE" is the label applied to any non-match, not a finding
+    that two items are alike.
+
+Ranking real alternatives needs a relatedness signal this model does not
+produce. ranking/embedding_retrieval.py already computes one.
 """
 
 from typing import Dict, List, Optional
