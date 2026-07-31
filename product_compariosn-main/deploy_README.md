@@ -4,6 +4,59 @@ Self-contained. Everything here is needed to serve the model; nothing here is
 needed to train it. Regenerate with `python build_deploy.py --model` from the
 repo root.
 
+## Which model is in here, and why
+
+**v7** — `deberta-v3-small` cross-encoder, binary, decision threshold **0.50**,
+description budget **100 words**.
+
+Four checkpoints were trained and measured against each other. v7 wins because
+it is the only one with a statistically detectable advantage anywhere
+(benchmark mean 81.70 vs 80.07–81.91), ties every rival on Indian data within
+noise, and is the only one verified end to end from its archive.
+
+| | v7 | desc20 v9 | hardneg v10 |
+|---|---|---|---|
+| Benchmark mean | **81.70** | 80.07 | 80.29 |
+| Indian F1 (SE 3.6) | 79.45 | 79.72 | 77.33 |
+| Indian errors | 30 | **29** | 34 |
+| hard-slice precision | 15.38 | **16.00** | 12.50 |
+| inference cost | 1.00x | **0.76x** | **0.76x** |
+
+`desc20 v9` is a legitimate swap if inference cost matters — statistically
+identical on Indian data and 24% cheaper — but it early-stopped an epoch sooner
+than v7, so its benchmark deficit is unresolved. Settle that before switching.
+
+## Known limits of this model — read before trusting an answer
+
+Measured on 190 hand-labelled real Indian e-commerce pairs:
+
+| slice | F1 | note |
+|---|---|---|
+| easy | **100.00** | different categories, obvious duplicates |
+| medium | 89.55 | ordinary cross-merchant matching |
+| **hard** | **25.81** | precision **15.38%** |
+
+The model is excellent where the distinction is lexically obvious and **fails
+on near-misses**, over-predicting "same product" (25 false positives against 5
+false negatives). Confirmed reproducible across four independently trained
+checkpoints, so it is a property of the training data, not a bad seed.
+
+Specific failures, each scored above 99% confidence:
+
+```
+Noise Buds VS104        vs  Noise Buds VS104 Max      99.99%
+boAt Airdopes 141       vs  boAt Airdopes 141 Pro     99.60%
+JBL Tune 215 (neckband) vs  JBL Tune 215TWS           99.96%
+genuine boAt Airdopes   vs  "Thirty First For Boat"   99.92%
+Airdopes 141 Bold Black vs  Airdopes 141 Active Black 99.97%
+```
+
+**Practical consequence:** do not auto-accept a match on score alone for
+same-brand candidates whose titles differ only by a suffix (`Max`, `Pro`,
+`Gen 2`, `Lite`), by a form-factor word, or where one side contains `for` /
+`compatible with`. Those need human review or a rule-based guard in front.
+A high score in those cases carries no information.
+
 ## ⚠️ Read before exposing this to a network
 
 This service has **no authentication and no rate limiting**. Anyone who can
@@ -118,10 +171,19 @@ All values below are measured on this checkpoint, not estimated.
 |---|---|
 | `/health` | `model_loaded: true`, `num_labels: 2` |
 | True match (same product, extra words in title) | **99.99%**, returned as `exact_match` |
+| Several merchants selling one product | best in `exact_match`, **rest in `other_matches`** |
 | Same product, different colour | **~0.00%**, returned under `similar_products` as `SIMILAR_ALTERNATIVE` |
 | Unrelated product | **omitted from the response entirely** |
 | Empty `candidates` | HTTP 422 |
 | No model found | HTTP 503, not a crash |
+
+**`other_matches` is why candidate counts must balance.** `exact_match` is a
+single slot, but several merchants listing one product is the normal case for
+price comparison — the whole point of the service. Every additional candidate
+the model judges to be the same product goes in `other_matches`, best first.
+An earlier version kept only the top one and silently discarded the rest;
+`smoke_test.py` now counts candidates in versus out, which is the only check
+that catches that class of bug.
 
 Two of those surprise people:
 

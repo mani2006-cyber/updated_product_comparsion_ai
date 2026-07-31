@@ -95,6 +95,12 @@ def main():
               f"got {meta.get('num_labels')}")
         check("inference_threshold present", meta.get("inference_threshold") is not None,
               f"got {meta.get('inference_threshold')}")
+        # The description budget must match what this checkpoint TRAINED on, not
+        # whatever config currently says. v7 predates the field and must resolve
+        # to 100; a checkpoint trained after the 20-word change records 20.
+        # Serving the wrong budget costs accuracy without raising.
+        budget = meta.get("description_words", "absent -> 100 (legacy)")
+        print(f"  [INFO] description budget: {budget}")
     except FileNotFoundError:
         check("training_metadata.json readable", False, f"missing at {meta_path}")
 
@@ -161,6 +167,29 @@ def main():
     if s_var is not None:
         check("true match outranks colour variant", s_match > s_var,
               f"{s_match} vs {s_var}")
+
+    # ---- 4b. nothing may be silently dropped -----------------------------
+    # The ranker used to keep ONE match and discard every other candidate it
+    # also judged the same product. Measured live on three Garnier listings at
+    # 99.9878 / 99.9853 / 99.9848: one returned, two deleted, similar_products
+    # empty. That destroys the core use case, since several merchants listing
+    # one product is normal for price comparison. Counting candidates in vs out
+    # is the only check that catches it -- every other assertion passed.
+    print("\nPOST /compare  -- candidate conservation (3 near-identical matches)")
+    _, body = post(f"{base}/compare", {
+        "product": product("P1", MATCH_A),
+        "candidates": [product("P2", MATCH_B), product("P4", VARIANT),
+                       product("P5", ("boAt Airdopes 141 Elite ANC | 42H, 35dB ANC",
+                                      "boAt", "ANC earbuds"))],
+        "top_n": 10,
+    })
+    returned = (1 if body.get("exact_match") else 0) \
+        + len(body.get("other_matches", [])) + len(body.get("similar_products", []))
+    print(f"  in=3  out={returned}  "
+          f"(exact_match + {len(body.get('other_matches', []))} other_matches "
+          f"+ {len(body.get('similar_products', []))} similar)")
+    check("no candidate is silently dropped", returned == 3, f"3 in, {returned} out")
+    check("other_matches field present", "other_matches" in body)
 
     # ---- 5. input validation ---------------------------------------------
     print("\nPOST /compare  -- empty candidates (must be rejected)")
