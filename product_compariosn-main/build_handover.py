@@ -21,7 +21,7 @@ from reportlab.platypus import (KeepTogether, PageBreak, Paragraph, SimpleDocTem
                                 Spacer, Table, TableStyle)
 
 OUT = "PROJECT_HANDOVER.pdf"
-DATE = "31 July 2026"
+DATE = "14 August 2026"
 
 INK = colors.HexColor("#1a1a1a")
 MUTED = colors.HexColor("#555555")
@@ -98,11 +98,13 @@ def build():
     A(TABLE([
         ["Status", "Working end-to-end; benchmark-competitive; not production-hardened"],
         ["Model", "microsoft/deberta-v3-small cross-encoder, binary (same / different product)"],
-        ["Shipped config", "<b>v7 checkpoint at decision threshold 0.50</b> (see S2.8)"],
+        ["Shipped config", "<b>v11 checkpoint, threshold 0.50, description budget 20w</b> (S2.9)"],
+        ["Deploy bundle", "deploy/ -- self-contained, 12/12 smoke + load-tested (S8)"],
         ["Headline result", "Beats published Ditto &amp; RoBERTa baselines on 5 of 6 benchmarks"],
-        ["Generalisation", "SEEN-&gt;UNSEEN drop -6.73, best of any system measured"],
+        ["Generalisation", "WDC-UNSEEN 75.52, best recorded (+4.38 over RoBERTa)"],
+        ["Real-market F1", "80.85 on 190 hand-labelled Indian pairs (S1.5)"],
         ["Retrieval", "95.7% recall@50 over 112,746 products at 24 ms"],
-        ["Tests", "46 collected: 45 passing, 1 xfail (documented, S4.1)"],
+        ["Tests", "54 collected: 53 passing, 1 xfail (documented, S4.1)"],
         ["Date", DATE],
     ], [30, 135], header=False))
 
@@ -111,11 +113,13 @@ def build():
         "data problem, never a model problem. The same architecture scored 45.9 F1 trained on "
         "rule-generated labels and 75.6 trained on human labels. Before changing the model, check "
         "the data.", "warn"))
-    A(P("<b>THE SECOND THING.</b> As of July 2026 the model is <b>done</b> for benchmark purposes. "
-        "Two consecutive experiments returned null: adding 40k human-labelled LSPC pairs moved the "
-        "six-benchmark mean by +0.01 F1, and threshold calibration failed to clear its own noise "
-        "floor. Further benchmark work is fitting noise. The remaining upside is real-world "
-        "labelled data (S5.2) and production hardening (S5.1).", "warn"))
+    A(P("<b>THE SECOND THING.</b> As of August 2026 the model is <b>done</b> for benchmark "
+        "purposes. FOUR consecutive experiments returned null or noise-level results (S2.10). "
+        "The remaining upside is real-world labelled data (S5.2) and production hardening (S5.1) "
+        "-- not architecture, not more public corpora.", "warn"))
+    A(P("<b>THE THIRD THING.</b> Run-to-run variance on identical inputs is ~2 benchmark F1 and "
+        "~3.5 Indian F1 (S2.9). Do not draw a conclusion from a single training run; one nearly "
+        "buried a working idea.", "warn"))
 
     # ---------------------------------------------------------------- results
     A(P("1. Results", "h1"))
@@ -145,6 +149,22 @@ def build():
         "four. Both tables are internally consistent - every model within a table was scored by "
         "the same code on the same data - so compare within a table, never across. Resolving this "
         "is open work.", "warn"))
+
+    A(P("1.1b Shipped model (v11) -- same evaluation, current checkpoint", "h2"))
+    A(TABLE([
+        ["Benchmark", "argmax", "best-thr", "Published"],
+        ["Structured_Amazon-Google", "76.74", "77.05", "Ditto 75.58"],
+        ["Structured_Walmart-Amazon", "87.40", "87.69", "Ditto 86.76"],
+        ["Textual_Abt-Buy", "91.73", "91.93", "Ditto 89.33"],
+        ["WDC-SEEN", "82.54", "82.70", "RoBERTa 78.58"],
+        ["WDC-HALF-SEEN", "79.62", "81.82", "RoBERTa 75.91"],
+        ["WDC-UNSEEN", "<b>75.52</b>", "76.16", "RoBERTa 71.14"],
+        ["<b>mean</b>", "<b>82.26</b>", "82.89", "-"],
+    ], [52, 22, 22, 34]))
+    A(Spacer(1, 4))
+    A(P("v11 = 20-word description budget + hard-negative mined corpus (58,112 pairs). "
+        "Beats the published baseline on 5 of 6, and WDC-UNSEEN 75.52 is the best figure "
+        "this project has recorded."))
 
     A(P("1.2 Generalisation to unseen products", "h2"))
     A(P("The drop from SEEN to UNSEEN measures whether a matcher handles products it has never "
@@ -320,6 +340,81 @@ def build():
         "cost-of-not-knowing - both of which favour v7."))
     A(P("Per-CATEGORY calibration remains viable if category is known at query time. Per-BENCHMARK "
         "thresholds are not servable: a live query does not arrive labelled 'Abt-Buy'.", "note"))
+
+
+    A(P("2.9 Model selection: five checkpoints, and what separates them", "h2"))
+    A(P("Every checkpoint below is deberta-v3-small, binary, threshold 0.50 (the "
+        "calibration gate kept the default on all five). They differ only in corpus "
+        "and description budget."))
+    A(TABLE([
+        ["", "v7", "v9 desc20", "v10 hard", "<b>v11 hard</b>"],
+        ["Benchmark mean", "81.70", "80.07", "80.29", "<b>82.26</b>"],
+        ["WDC-UNSEEN", "74.78", "-", "72.23", "<b>75.52</b>"],
+        ["Indian F1 (SE 3.6)", "79.45", "79.72", "77.33", "<b>80.85</b>"],
+        ["Indian precision", "69.88", "71.25", "66.67", "<b>73.08</b>"],
+        ["Indian errors", "30", "29", "34", "<b>27</b>"],
+        ["hard-slice precision", "15.38", "16.00", "12.50", "<b>17.39</b>"],
+        ["cost of not knowing", "1.04", "2.29", "1.91", "<b>0.63</b>"],
+        ["inference cost", "1.00x", "0.76x", "0.76x", "<b>0.76x</b>"],
+    ], [40, 26, 26, 26, 28]))
+    A(Spacer(1, 4))
+    A(P("<b>v11 ships.</b> Best on benchmarks, best on the target market, cheapest, and "
+        "the best generalisation figure this project has recorded.", "warn"))
+    A(P("<b>RUN-TO-RUN VARIANCE IS ~2 F1 AND IT INVALIDATED AN EARLIER VERDICT.</b> v10 "
+        "and v11 are the SAME recipe on the SAME corpus at the SAME seed (42), and differ "
+        "by 2.0 benchmark F1 and 3.5 Indian F1. Seeding is not the whole story -- cuDNN "
+        "autotuning and dataloader ordering are nondeterministic on GPU. On v10 alone the "
+        "conclusion was 'hard-negative mining made things worse'; v11 overturned it. Any "
+        "recipe comparison below ~2 F1 needs several runs. config.RANDOM_SEED now reads "
+        "$SEED so this is cheap to do.", "warn"))
+
+    A(P("2.10 Four experiments that returned null", "h2"))
+    A(TABLE([
+        ["Experiment", "Result"],
+        ["LSPC 40k diversity-first merge", "six-benchmark mean moved +0.01 (S2.7)"],
+        ["Threshold calibration", "gate kept 0.50 on all five models (S2.8)"],
+        ["Description budget 100w -&gt; 20w", "-0.47 F1, half an SE; 24% fewer tokens. "
+                                            "Kept for the speed, not accuracy"],
+        ["Hard-negative mining", "hard slice 15.38 -&gt; 17.39, inside run-to-run noise"],
+    ], [52, 98]))
+    A(Spacer(1, 4))
+    A(P("The hard slice has never exceeded 17.39% precision across five checkpoints. That "
+        "is the one number no amount of public data has moved, and the reason is now "
+        "measured rather than guessed: of the 16,916 hardest negatives available in LSPC, "
+        "only 4.7% are the model-suffix shape (VS104 vs VS104 Max) that Indian listings "
+        "turn on. A 2017 European web crawl does not contain it. The remaining lever is "
+        "~2,000 hand-labelled Indian pairs, fine-tuned on top of v11 rather than trained "
+        "from scratch -- 190 pairs measure a model, they cannot train one."))
+
+    A(P("2.11 The model is order-sensitive; serving is not", "h2"))
+    A(P("\"Is A the same product as B\" is symmetric. A cross-encoder is not: [CLS] a "
+        "[SEP] b [SEP] and its mirror are different inputs. dedupe() is order-invariant, "
+        "so every pair reached training in exactly ONE order and the model never saw the "
+        "mirror. Measured on the 190-pair Indian set: median gap between orders 0.06 pp, "
+        "p95 35.9 pp, worst 91.8 pp, and 8 pairs (4.2%) flip across the threshold on "
+        "argument order alone."))
+    A(P("ProductComparer._canonical sorts the serialized texts, so both call orders become "
+        "the same forward pass -- the SERVICE is now exactly order-invariant at zero cost. "
+        "Averaging both directions was rejected: it doubles inference against a 2.3 req/s "
+        "ceiling and is no more accurate (80.85 / 81.75 / 80.58 forward / reversed / "
+        "averaged, all inside one SE). The MODEL is still asymmetric -- anything calling "
+        "predict_probabilities directly sees the raw behaviour. build_real_corpus.py "
+        "--swap-augment is the durable fix and is written but NOT yet trained."))
+
+    A(P("2.12 Twelve contradictory labels, present since v7", "h2"))
+    A(P("dedupe() keys on (pair, LABEL), so a pair annotated both ways survives twice and "
+        "the model is told one input is simultaneously a match and a non-match. 12 pairs, "
+        "24 rows, in every corpus built since v7. Both copies are now dropped -- there is "
+        "no evidence which annotation is right, and a contradictory label is worse than a "
+        "missing one."))
+    A(P("Worth recording how nearly this went wrong. Two pandas implementations of the "
+        "filter looked correct and were not: pd.Index over tuples silently builds a "
+        "MultiIndex so groupby(level=0) grouped on the first text alone and flagged "
+        "nothing; a \"\x00\"-joined key was truncated at the null byte, collapsing "
+        "18,526 pairs into 6,457 groups and inventing 1,026 contradictions that would "
+        "have deleted 3,207 rows. It was caught only because the output was internally "
+        "impossible -- 1,026 groups containing 1,031 rows, when each needs two. The "
+        "shipped version is a plain dict checked against ground truth.", "note"))
 
     A(PageBreak())
 
