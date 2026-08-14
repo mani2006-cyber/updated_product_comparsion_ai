@@ -64,6 +64,14 @@ trained_model*/**
 trained_model_structured.zip
 outputs/
 
+# Same trap, different name: checkpoints pulled down from kaggle_job/ runs
+# (e.g. swapaug_seed42/, swapaug_seed1337/) don't start with "trained_model"
+# so the glob above misses them entirely. Found by hand on 14 Aug 2026 when
+# two ~430 MB extracted checkpoints sat untracked in the repo root, one
+# `git add .` away from getting committed.
+swapaug_seed*/**
+!swapaug_seed*/training_metadata.json
+
 # -----------------------------------------------------------------------------
 # Generated data -- rebuilt by running the code, don't commit
 # -----------------------------------------------------------------------------
