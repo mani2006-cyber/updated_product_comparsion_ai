@@ -74,7 +74,9 @@ Usage:
 """
 
 import argparse
+import functools
 import glob
+import hashlib
 import json
 import os
 from typing import Dict, List, Tuple
@@ -119,9 +121,45 @@ def _load_model(model_dir: str):
     return model, tok, device, match_idx
 
 
+@functools.lru_cache(maxsize=None)
+def _model_fingerprint(model_dir: str) -> str:
+    """Content hash of the checkpoint weights.
+
+    The cache used to key on os.path.basename(model_dir) alone. That looks
+    safe -- it isn't. Two DIFFERENT models trained into the same directory
+    name (exactly what kaggle_job/run.py does: both seeds train into
+    trained_model_real/, one after another, in the same session) share a
+    cache path. Measured live comparing swap-augment seed 42 vs seed 1337:
+    seed 1337's entire calibration table -- fitted threshold, all six
+    benchmark scores, "cached" markers and all -- came back byte-identical
+    to seed 42's, because score_split() found seed 42's .npz files still
+    sitting at that path and matching length, and returned them unscored.
+    Nothing raised; the mistake was only caught by comparing two runs that
+    should have differed and didn't.
+
+    lru_cache'd because this is called once per split (valid + one per test
+    benchmark) per run, and hashing a ~280MB safetensors file 7 times over
+    would undo the whole point of caching.
+    """
+    weights_path = None
+    for name in ("model.safetensors", "pytorch_model.bin"):
+        candidate = os.path.join(model_dir, name)
+        if os.path.isfile(candidate):
+            weights_path = candidate
+            break
+    if weights_path is None:
+        return "noweights"
+    h = hashlib.blake2b(digest_size=8)
+    with open(weights_path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def _cache_path(cache_dir: str, model_dir: str, split: str) -> str:
     tag = os.path.basename(os.path.normpath(model_dir))
-    return os.path.join(cache_dir, tag, f"{split}.npz")
+    fp = _model_fingerprint(model_dir)
+    return os.path.join(cache_dir, f"{tag}-{fp}", f"{split}.npz")
 
 
 def score_split(model, tok, device, text_a, text_b, y_true, batch_size,
