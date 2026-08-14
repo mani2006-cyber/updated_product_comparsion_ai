@@ -141,6 +141,10 @@ def main():
     ap.add_argument("--er-dir", default=ER_DIR)
     ap.add_argument("--wdc", default=None, help="Folder holding WDC json files (optional)")
     ap.add_argument("--wdc-size", default="large", choices=["small", "medium", "large"])
+    ap.add_argument("--swap-augment", action="store_true",
+                    help="Emit every TRAIN pair in both orders so the model learns "
+                         "that matching is symmetric. Doubles the corpus and the "
+                         "training time. Validation is left untouched.")
     ap.add_argument("--include-dirty", action="store_true",
                     help="Also train on Dirty/Walmart-Amazon. Off by default: it duplicates "
                          "the Structured pairs and would leak near-duplicates across splits.")
@@ -176,6 +180,42 @@ def main():
     valid, dup_va = dedupe(valid)
     print(f"\ndeduplicated (order-invariant): train -{dup_tr}, valid -{dup_va}")
 
+    # dedupe() keys on (pair, LABEL), so a pair annotated both ways survives
+    # twice and the model is told one input is simultaneously a match and a
+    # non-match. Measured: 12 such pairs in the 38,145-row train split, present
+    # in every run since v7. They come from distinct source records that
+    # serialize to identical COL/VAL text, which the merge notes above already
+    # flags as possible.
+    #
+    # Both copies are dropped rather than one being picked. There is no
+    # evidence for which annotation is right, and a contradictory label is
+    # worse than a missing one -- it is noise pointing in two directions at
+    # once. Same reasoning as the EXCLUDE rows in the Indian eval set.
+    def drop_contradictions(df, name):
+        if df.empty:
+            return df, 0
+        # Plain dict, deliberately not pandas. Two pandas attempts got this
+        # wrong in ways that looked plausible: pd.Index over tuples builds a
+        # MultiIndex so groupby(level=0) grouped on the first text alone and
+        # found nothing, and a "\x00"-joined string key was truncated at the
+        # null byte, collapsing 18,526 distinct pairs into 6,457 groups and
+        # manufacturing 1,026 false contradictions. Ground truth is 12.
+        seen = {}
+        for a, b, lab in zip(df.text_a, df.text_b, df.label):
+            seen.setdefault(tuple(sorted((a, b))), set()).add(lab)
+        bad = {k for k, labels in seen.items() if len(labels) > 1}
+        if not bad:
+            return df, 0
+        keep = [tuple(sorted((a, b))) not in bad
+                for a, b in zip(df.text_a, df.text_b)]
+        return df[keep].reset_index(drop=True), len(df) - sum(keep)
+
+    train, contra_tr = drop_contradictions(train, "train")
+    valid, contra_va = drop_contradictions(valid, "valid")
+    if contra_tr or contra_va:
+        print(f"contradictory labels (same pair marked both 0 and 1): "
+              f"train -{contra_tr}, valid -{contra_va} rows dropped")
+
     # Any entity shared between train and valid inflates validation, so it is
     # measured and reported rather than assumed away. The benchmarks control
     # this internally, but merging four of them is a new situation.
@@ -205,6 +245,33 @@ def main():
     # Re-splitting by entity would break comparability with every published
     # number on these benchmarks. It is reported so the merged valid F1 is read
     # as optimistic; the per-benchmark TEST sets remain the real measurement.
+
+    # ---- optional swap augmentation ---------------------------------------
+    # "Is A the same product as B" is symmetric, but a cross-encoder is not:
+    # [CLS] a [SEP] b [SEP] and its mirror are different inputs with different
+    # token_type_ids. Because dedupe() above is order-invariant, every pair
+    # reaches training in exactly ONE order and the model never sees the
+    # mirror. Measured consequence on the 190-pair Indian set: median gap
+    # between the two orders 0.06 pp, p95 35.9 pp, worst 91.8 pp, and 8 pairs
+    # (4.2%) flip across the decision threshold on argument order alone.
+    #
+    # ProductComparer canonicalises at serving time, which makes the SERVICE
+    # consistent. This makes the MODEL consistent, which is the durable fix.
+    #
+    # ORDER MATTERS HERE: this runs after dedupe() and after the train/valid
+    # leak filter. Augmenting earlier would be a no-op, because the
+    # order-invariant dedup would immediately collapse each mirror back into
+    # its original, and the leak filter keys on sorted pairs so mirrors cannot
+    # smuggle a validation pair into training.
+    if args.swap_augment:
+        mirror = train.copy()
+        mirror["text_a"], mirror["text_b"] = train["text_b"].values, train["text_a"].values
+        before = len(train)
+        train = pd.concat([train, mirror], ignore_index=True)
+        print(f"\nswap augmentation: {before:,} -> {len(train):,} train pairs "
+              f"(each pair now appears in both orders)")
+        print("  valid is NOT augmented -- early stopping and the calibration gate")
+        print("  must judge this model on the same yardstick as the previous ones.")
 
     os.makedirs("data", exist_ok=True)
     train.to_csv(OUT_TRAIN, index=False)

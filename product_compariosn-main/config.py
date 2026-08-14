@@ -109,7 +109,16 @@ LABEL_COLUMN = "label"
 
 VAL_SPLIT_RATIO = 0.15
 TEST_SPLIT_RATIO = 0.15   # carved out of the data before train/val split
-RANDOM_SEED = 42
+# Overridable so a recipe can be run at several seeds without editing source.
+#
+# This matters more than it looks. v10 and v11 were the SAME recipe on the SAME
+# corpus and differed by 2.0 benchmark F1 and 3.5 Indian F1 -- with this seed
+# fixed at 42 in both. So run-to-run variation is not only the seed (cuDNN
+# autotuning and dataloader worker ordering are also nondeterministic on GPU),
+# and any recipe comparison smaller than ~2 F1 needs multiple runs to mean
+# anything. One run per recipe is how v10 produced a "hard-negative mining made
+# it worse" verdict that v11 overturned.
+RANDOM_SEED = int(os.environ.get("SEED", 42))
 STRATIFY_SPLITS = True
 
 
