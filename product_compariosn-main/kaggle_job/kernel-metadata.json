@@ -1,5 +1,5 @@
 {
-  "id": "mani2006-cyber/product-matching-swapaug",
+  "id": "geddamanikanta/product-matching-swapaug",
   "title": "product-matching-swapaug",
   "code_file": "run.py",
   "language": "python",
@@ -7,7 +7,7 @@
   "is_private": true,
   "enable_gpu": true,
   "enable_internet": true,
-  "dataset_sources": [],
+  "dataset_sources": ["geddamanikanta/wdc-products-2023-50pair"],
   "competition_sources": [],
   "kernel_sources": []
 }
