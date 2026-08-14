@@ -50,6 +50,16 @@ sh("python -c \"import torch; "
    cwd=SRC)
 sh("pip install --no-cache-dir -q transformers==5.14.1", cwd=SRC)
 sh("pip install --no-cache-dir -q -r requirements.txt --no-warn-conflicts", cwd=SRC)
+# This recipe never sets USE_LORA=True and nothing in exact_match/ imports
+# peft directly, but requirements.txt installs it anyway (for anyone who
+# does flip that flag). peft's constants module unconditionally imports
+# BloomPreTrainedModel from transformers; against 5.14.1 that import fails,
+# and the failure poisons transformers' lazy module loader so that even
+# unrelated names -- `from transformers import get_scheduler`, needed by
+# every run regardless of LoRA -- fail too. Removing peft here removes the
+# broken import path; accelerate and transformers both treat peft as
+# optional and degrade gracefully when it's absent.
+sh("pip uninstall -y -q peft", cwd=SRC)
 sh(f"mkdir -p {WORK}/wdc && find /kaggle/input -name 'wdcproducts*' "
    f"-exec cp {{}} {WORK}/wdc/ \\;")
 
