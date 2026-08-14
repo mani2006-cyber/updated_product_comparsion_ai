@@ -1,0 +1,16 @@
+{
+  "id": "geddamanikanta/product-matching-category-calib",
+  "title": "product-matching-category-calib",
+  "code_file": "run.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [
+    "geddamanikanta/wdc-products-2023-50pair",
+    "geddamanikanta/product-matching-v11-checkpoint"
+  ],
+  "competition_sources": [],
+  "kernel_sources": []
+}
