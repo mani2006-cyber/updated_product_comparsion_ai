@@ -38,7 +38,7 @@ sh(f"git clone --depth 1 {REPO} {WORK}/pc")
 # keeps sm_60 kernels and runs on P100, T4 and L4 alike; CUDA wheels bundle
 # their own runtime, so this only needs the P100's driver to be new enough
 # for 11.8, which it is on every Kaggle host observed so far.
-sh("pip install --no-cache-dir -q torch==2.1.2 --index-url https://download.pytorch.org/whl/cu118",
+sh("pip install --no-cache-dir -q torch==2.2.2 --index-url https://download.pytorch.org/whl/cu118",
    cwd=SRC)
 sh("python -c \"import torch; print('torch', torch.__version__, "
    "'| cuda available:', torch.cuda.is_available(), "
