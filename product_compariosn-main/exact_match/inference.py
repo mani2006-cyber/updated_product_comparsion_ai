@@ -176,6 +176,30 @@ class ProductComparer:
             "silently collapses match recall.", path)
         return "pipeline"
 
+    @staticmethod
+    def _canonical(text_a: str, text_b: str):
+        """Put a pair into a fixed order so scoring is order-invariant.
+
+        "Is A the same product as B" is a symmetric question, but a
+        cross-encoder is not a symmetric function: [CLS] a [SEP] b [SEP] and
+        [CLS] b [SEP] a [SEP] are different inputs with different token_type_ids.
+        Nothing in training pushed back on that -- build_real_corpus.py dedups
+        with tuple(sorted(...)), so every pair appears in exactly ONE order and
+        the model never saw the mirror.
+
+        Measured on the 190-pair Indian set: median difference between the two
+        orders is 0.06 pp, but p95 is 35.9 pp, the worst case is 91.8 pp, and
+        8 pairs (4.2%) cross the decision threshold -- the same answer flips
+        depending on which product the caller happens to put first.
+
+        Sorting the serialized texts costs nothing and makes the two calls
+        literally the same forward pass. It does not make the model better --
+        forward and reversed score within noise of each other (F1 80.85 vs
+        81.75) -- it makes it CONSISTENT. Averaging both orders would also work
+        but doubles inference, and throughput is already the bottleneck.
+        """
+        return (text_a, text_b) if text_a <= text_b else (text_b, text_a)
+
     def _text(self, title: str, brand: str = "", specs: str = "", description: str = "") -> str:
         if self.serialization == "colval":
             return _serialize_colval(title, brand, specs or description,
@@ -201,6 +225,7 @@ class ProductComparer:
         threshold = self.threshold if threshold is None else threshold
         text_a = self._text(title_a, brand_a, specs_a, description_a)
         text_b = self._text(title_b, brand_b, specs_b, description_b)
+        text_a, text_b = self._canonical(text_a, text_b)
 
         encoding = self.tokenizer(
             text_a,
@@ -263,6 +288,12 @@ class ProductComparer:
                               p.get("specs_a", ""), p.get("description_a", "")) for p in pairs]
         texts_b = [self._text(p.get("title_b", ""), p.get("brand_b", ""),
                               p.get("specs_b", ""), p.get("description_b", "")) for p in pairs]
+        # Canonicalise each pair so a caller swapping the two products gets the
+        # same score. Only the model INPUT is reordered -- results stay aligned
+        # with `pairs`, so callers still get their own ordering back.
+        canon = [self._canonical(a, b) for a, b in zip(texts_a, texts_b)]
+        texts_a = [c[0] for c in canon]
+        texts_b = [c[1] for c in canon]
 
         id2label = {int(k): v for k, v in self.model.config.id2label.items()}
         num_labels = len(id2label)
