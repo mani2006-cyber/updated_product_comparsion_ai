@@ -40,6 +40,14 @@ sh(f"git clone --depth 1 {REPO} {WORK}/pc")
 # for 11.8, which it is on every Kaggle host observed so far.
 sh("pip install --no-cache-dir -q torch==2.7.1 --index-url https://download.pytorch.org/whl/cu118",
    cwd=SRC)
+# The base image's torchvision/torchaudio were built against whatever torch
+# the image shipped with, not the cu118 build just installed above. Nothing
+# here does vision or audio work, but transformers' lazy loader imports
+# torchvision at PreTrainedModel resolution time regardless, and an ABI
+# mismatch there ("operator torchvision::nms does not exist") poisons the
+# loader for every other name too -- the same class of cascade peft caused.
+# Removing them is simpler and safer than chasing a matching build.
+sh("pip uninstall -y -q torchvision torchaudio", cwd=SRC)
 sh("python -c \"import torch; "
    "print('torch', torch.__version__, "
    "'| cuda available:', torch.cuda.is_available(), "
