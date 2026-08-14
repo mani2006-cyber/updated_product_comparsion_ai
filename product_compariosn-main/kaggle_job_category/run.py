@@ -58,6 +58,21 @@ sh(f"mkdir -p {WORK}/v11 && find /kaggle/input -iname 'model.zip' "
    f"-exec unzip -oq {{}} -d {WORK}/v11 \\;")
 sh(f"ls -la {WORK}/v11")
 
+# The exported checkpoint carries only tokenizer.json + tokenizer_config.json
+# (no spm.model -- save_model.py's export never included it). Loading that
+# tokenizer.json failed here with 'Couldn't instantiate the backend
+# tokenizer ... You need to have sentencepiece ... installed', even with
+# sentencepiece installed, because there is no spm.model locally to convert
+# from either. The vocabulary is identical across every deberta-v3-small
+# checkpoint this project has trained -- fine-tuning changes weights, not
+# tokenization -- so fetching a fresh tokenizer for the base model and
+# dropping it into the checkpoint dir is exact, not approximate. Only
+# tokenizer files are written; config.json / model.safetensors (the actual
+# weights) are untouched.
+sh(f"python -c \"from transformers import AutoTokenizer; "
+   f"AutoTokenizer.from_pretrained('microsoft/deberta-v3-small').save_pretrained('{WORK}/v11')\"",
+   cwd=SRC)
+
 # Regenerate data/real_corpus_valid.csv exactly as v11 was calibrated on.
 # mine_hard_negatives.py (v11's actual training recipe) only augments the
 # TRAIN split -- "Validation is unchanged" is printed by that script itself
