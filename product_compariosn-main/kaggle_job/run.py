@@ -28,10 +28,27 @@ def sh(cmd, cwd=None):
 
 
 sh(f"git clone --depth 1 {REPO} {WORK}/pc")
+
+# Kaggle can hand out a Tesla P100 (compute capability sm_60, Pascal) instead
+# of a T4/L4. The Kaggle base image's preinstalled torch is built for CUDA
+# 12.x, whose wheels dropped kernel support for anything older than sm_70
+# (Volta) -- training fails deep in the first forward pass with
+# "CUDA error: no kernel image is available for execution on the device",
+# which says nothing about the GPU being the cause. Pinning a CUDA 11.8 build
+# keeps sm_60 kernels and runs on P100, T4 and L4 alike; CUDA wheels bundle
+# their own runtime, so this only needs the P100's driver to be new enough
+# for 11.8, which it is on every Kaggle host observed so far.
+sh("pip install --no-cache-dir -q torch==2.1.2 --index-url https://download.pytorch.org/whl/cu118",
+   cwd=SRC)
+sh("python -c \"import torch; print('torch', torch.__version__, "
+   "'| cuda available:', torch.cuda.is_available(), "
+   "'| device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else None, "
+   "'| capability:', torch.cuda.get_device_capability(0) if torch.cuda.is_available() else None)\"",
+   cwd=SRC)
 sh("pip install --no-cache-dir -q transformers==5.14.1", cwd=SRC)
 sh("pip install --no-cache-dir -q -r requirements.txt --no-warn-conflicts", cwd=SRC)
 sh(f"mkdir -p {WORK}/wdc && find /kaggle/input -name 'wdcproducts*' "
-   f"-exec cp {{}} {WORK}/wdc/ \;")
+   f"-exec cp {{}} {WORK}/wdc/ \\;")
 
 for seed in (42, 1337):
     print(f"\n{'=' * 78}\nSEED {seed}\n{'=' * 78}", flush=True)
