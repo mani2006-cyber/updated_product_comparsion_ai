@@ -11,9 +11,12 @@ message) purely for speed: scoring ~30k pairs (validation + all six test
 benchmarks) took long enough on CPU that a GPU pass finishes before the CPU
 run would have gotten through half the splits.
 """
+import glob
 import os
+import shutil
 import subprocess
 import sys
+import zipfile
 
 REPO = "https://github.com/mani2006-cyber/updated_product_comparsion_ai.git"
 WORK = "/kaggle/working"
@@ -51,12 +54,31 @@ sh("pip uninstall -y -q peft", cwd=SRC)
 sh(f"mkdir -p {WORK}/wdc && find /kaggle/input -iname 'wdcproducts*' "
    f"-exec cp {{}} {WORK}/wdc/ \\;")
 
-# The v11 checkpoint dataset ships as model.zip (it's the same
-# trained_model_desc20_v11.zip already in the repo, just uploaded separately
-# since checkpoints are gitignored). Unzip once into a plain directory.
-sh(f"mkdir -p {WORK}/v11 && find /kaggle/input -iname 'model.zip' "
-   f"-exec unzip -oq {{}} -d {WORK}/v11 \\;")
-sh(f"ls -la {WORK}/v11")
+# The v11 checkpoint dataset was uploaded as model.zip, but Kaggle silently
+# decompresses any archive attached as a dataset (trap 6.3 in the handover:
+# "zipped checkpoints arrive as extracted directories"). Searching for
+# model.zip under /kaggle/input therefore found nothing -- there was no zip
+# left to unzip -- and the checkpoint was never actually copied, which is
+# why the previous run got as far as loading a (freshly-written, correct)
+# tokenizer from an otherwise-empty v11/ directory before failing on a
+# missing config.json. Handle both shapes: an already-extracted directory
+# (the real case here) or, if Kaggle ever changes that behaviour, a literal
+# .zip still needing extraction.
+os.makedirs(f"{WORK}/v11", exist_ok=True)
+weight_files = glob.glob("/kaggle/input/**/model.safetensors", recursive=True)
+if weight_files:
+    src_dir = os.path.dirname(weight_files[0])
+    print(f"found extracted checkpoint at {src_dir}")
+    for name in os.listdir(src_dir):
+        shutil.copy2(os.path.join(src_dir, name), os.path.join(f"{WORK}/v11", name))
+else:
+    zips = glob.glob("/kaggle/input/**/model.zip", recursive=True)
+    if not zips:
+        sys.exit("No v11 checkpoint found under /kaggle/input, extracted or zipped.")
+    print(f"found zipped checkpoint at {zips[0]}, extracting")
+    with zipfile.ZipFile(zips[0]) as zf:
+        zf.extractall(f"{WORK}/v11")
+print(f"{WORK}/v11 contents:", os.listdir(f"{WORK}/v11"))
 
 # The exported checkpoint carries only tokenizer.json + tokenizer_config.json
 # (no spm.model -- save_model.py's export never included it). Loading that
