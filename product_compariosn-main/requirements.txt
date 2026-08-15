@@ -15,3 +15,10 @@ protobuf>=4.25.0
 safetensors>=0.4.0
 fastapi>=0.110.0
 uvicorn>=0.29.0
+
+# exactmatch/llm_arbiter.py -- LLM escalation for the hard near-miss slice.
+# Needs ANTHROPIC_API_KEY (or an `ant auth login` profile) to actually call
+# out; absent that it degrades to the cross-encoder's own verdict, so these
+# are safe to install even before credentials exist.
+anthropic>=0.122.0
+pydantic>=2.0.0
