@@ -14,8 +14,18 @@ first with the existing build_real_corpus.py [+ mine_hard_negatives.py]
 at the repo root -- this package does not regenerate them). Exports the
 best checkpoint to exactmatch/trained_model/.
 """
+import argparse
 import os
 import sys
+
+# Under Kaggle's `!python`/subprocess stdout capture, tqdm can't rewrite its
+# line, so every step becomes a new line and the real per-epoch summaries get
+# buried in megabytes of progress-bar text (trap 6.4 in the handover -- other
+# driver scripts in this repo already guard against it; this one didn't, and
+# the first exactmatch training run produced a 3.9MB log because of it).
+# Off by default; --progress re-enables it for interactive use.
+if "--progress" not in sys.argv:
+    os.environ["TQDM_DISABLE"] = "1"
 
 import torch
 import torch.nn as nn

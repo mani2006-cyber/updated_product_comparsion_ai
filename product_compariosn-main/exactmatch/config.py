@@ -59,9 +59,17 @@ DESCRIPTION_WORDS = 20  # see root config.py DESCRIPTION_WORDS for the measureme
 # Training
 # ---------------------------------------------------------------------------
 NUM_EPOCHS = 15
-TRAIN_BATCH_SIZE = 16
+# 32, not the root config.py default of 16: train_on_real_corpus.py (the
+# actual script that trained v7-v11) overrides that default to 32 via its
+# own --batch_size CLI default, giving effective batch 64 -- exactly what
+# PROJECT_HANDOVER.pdf S3.3 records ("effective batch 64 (32 x 2 accum)").
+# First exactmatch run used the ROOT default (16, effective batch 32) and
+# came in -2.84 F1 vs v11, concentrated in the WDC splits (-4 to -5 each).
+# Found by diffing train_on_real_corpus.py's config overrides against this
+# file line by line -- everything else already matched.
+TRAIN_BATCH_SIZE = 32
 EVAL_BATCH_SIZE = 32
-GRADIENT_ACCUMULATION_STEPS = 2  # effective batch = 32
+GRADIENT_ACCUMULATION_STEPS = 2  # effective batch = 64
 LEARNING_RATE = 5e-5
 WEIGHT_DECAY = 0.01
 WARMUP_RATIO = 0.05
