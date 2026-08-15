@@ -72,6 +72,15 @@ outputs/
 swapaug_seed*/**
 !swapaug_seed*/training_metadata.json
 
+# trained_model*/** above is anchored to this .gitignore's own directory
+# (git resolves a pattern containing a mid-string "/" relative to where the
+# .gitignore file lives, not recursively), so it does NOT reach
+# exactmatch/trained_model/ one level down. Verified by hand: exactmatch/
+# outputs/ was already covered by the bare `outputs/` rule below, but
+# exactmatch/trained_model/model.safetensors was not caught by anything.
+exactmatch/trained_model/**
+!exactmatch/trained_model/training_metadata.json
+
 # -----------------------------------------------------------------------------
 # Generated data -- rebuilt by running the code, don't commit
 # -----------------------------------------------------------------------------
